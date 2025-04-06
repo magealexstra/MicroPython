@@ -1,6 +1,9 @@
-MIT License
+# MIT License
 
+## Copyright Notice
 Copyright (c) 2025 Mage Alexstra
+
+## License Text
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +22,45 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Understanding the MIT License
+
+### What This License Means
+
+The MIT License is a permissive license that allows you to do almost anything with this
+project, like:
+
+- ✅ Use the code commercially
+- ✅ Distribute the code
+- ✅ Modify the code
+- ✅ Use the code privately
+- ✅ Sublicense the code
+
+### Your Responsibilities
+
+The only requirement is that you must include:
+
+1. The original copyright notice
+2. A copy of the license text
+
+in all copies or substantial portions of the Software.
+
+### No Warranty
+
+This software is provided "as is" without warranty of any kind. The author(s) are not
+liable for any claim, damages, or other liability arising from the use of the software.
+
+### How to Attribute
+
+When using this software in your project, include a notice like:
+
+```
+MicroPython-ESP32-Projects
+Copyright (c) 2025 Mage Alexstra
+Licensed under the MIT License
+```
+
+---
+
+For more information about the MIT License, visit:
+https://opensource.org/licenses/MIT

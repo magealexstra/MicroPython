@@ -119,20 +119,18 @@ def main():
         return
     i2c, sensor_addr = sensor
 
+    # Initialize EMA and last sent values outside the loop to persist across iterations
+    ema_temp = None
+    ema_humidity = None
+    last_sent_temp = None
+    last_sent_humidity = None
+
     while True:
-           # Initialize EMA and last sent values
-        ema_temp = None
-        ema_humidity = None
-        last_sent_temp = None
-        last_sent_humidity = None
-        # Reconnect Wi-Fi if disconnected
-        if not wlan.isconnected():
-            debug_print('Wi-Fi disconnected, attempting to reconnect...')
- 
         # Reconnect Wi-Fi if disconnected
         if not wlan.isconnected():
             debug_print('Wi-Fi disconnected, attempting to reconnect...')
             wlan = connect_wifi()
+
         # Reconnect MQTT if disconnected
         if client is None:
             client = connect_mqtt()
