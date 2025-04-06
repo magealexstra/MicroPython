@@ -124,7 +124,9 @@ MQTT_PORT = 1883                  # Default MQTT port
    ```
 
 2. **Create `secrets.py`**
-   Create this file in the project root with your credentials (see [Shared Configuration](#-shared-configuration))
+   - Copy the provided template: `cp secrets_example.py secrets.py`
+   - Edit `secrets.py` with your actual credentials
+   - See [Shared Configuration](#-shared-configuration) for required values
 
 3. **Project-specific setup**
    - **BreakSense**: Connect a digital sensor to GPIO pin (default: GPIO2)
@@ -181,7 +183,8 @@ MicroPython-ESP32-Projects/
 │   └── TempSense.py      # Temperature/humidity monitoring code
 ├── .gitignore            # Git ignore configuration
 ├── LICENSE               # MIT License file
-└── README.md             # This documentation file
+├── README.md             # This documentation file
+└── secrets_example.py    # Template for creating secrets.py configuration
 ```
 
 ## 🔒 Security Notes
