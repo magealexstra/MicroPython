@@ -7,7 +7,6 @@ from umqtt.simple import MQTTClient
 
 # Import secrets
 try:
-    sys.path.append('/Secrets')  # Add Secrets directory to path if needed
     from secrets import WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT
 except ImportError:
     print("Failed to import secrets. Please ensure 'Secrets/secrets.py' is uploaded to the device.")

@@ -172,5 +172,7 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-# Ignore secrets folder containing sensitive data
-Secrets/
+# Ignore secrets files containing sensitive data
+**/secrets.py
+
+editscript
