@@ -67,7 +67,35 @@ A temperature and humidity monitoring system that uses I2C sensors with the ESP3
 
 ### LightCont
 
-> ℹ️ This project is in development. Documentation will be updated as the project progresses.
+A relay-based light controller system for ESP32 with both MQTT and physical button control.
+
+**Features:**
+- Wi-Fi and MQTT connectivity with automatic reconnection
+- Support for multiple relay-controlled lights/devices
+- Physical momentary switch control with debouncing
+- Flexible button-to-relay mapping (control specific lights with buttons)
+- Topic-based control for individual relays
+- MQTT state updates whenever relay states change
+- Exponential backoff for connection retries
+- Unique client ID based on ESP32 MAC address
+- MQTT Last Will and Testament for offline detection
+
+**Configuration Options:**
+- `RELAY_PINS` - List of GPIO pins connected to relays
+- `BUTTON_PINS` - List of GPIO pins connected to momentary switches
+- `BUTTON_RELAY_MAP` - Mapping dictionary defining which button controls which relay
+- `DEBOUNCE_MS` - Button debounce time in milliseconds (default: `300`)
+- `MAX_CONNECTION_RETRIES` - Maximum reconnection attempts before device reset
+
+**How It Works:**
+1. Initializes relay outputs and button inputs (with pull-up resistors)
+2. Connects to Wi-Fi and MQTT broker with Last Will message
+3. Subscribes to command topics for each relay
+4. Monitors for MQTT commands to control relays
+5. Detects button presses with edge detection and debouncing
+6. Toggles corresponding relay state when button is pressed
+7. Publishes state changes to MQTT whenever a relay changes
+8. Automatically reconnects with exponential backoff if connections drop
 
 ## 🔄 Shared Configuration
 
@@ -103,6 +131,10 @@ MQTT_PORT = 1883                  # Default MQTT port
    - **TempSense**: Connect an I2C temperature/humidity sensor (e.g., SHT31)
      - Default pins: SCL=GPIO22, SDA=GPIO21
      - Default I2C address: 0x44 (SHT31)
+   - **LightCont**: Connect relays and momentary switches to ESP32
+     - Default relay pin: GPIO5
+     - Default button pin: GPIO4 (with pull-up resistor)
+     - Customize pin assignments in the script as needed
 
 4. **Upload to ESP32**
    Using tools like `ampy`, `rshell`, or Thonny IDE:
@@ -133,6 +165,9 @@ Each project runs independently on an ESP32. After uploading the files, you can:
    - Use an MQTT client to subscribe to the respective topics:
      - BreakSense: `esp32/breaksense`
      - TempSense: `esp32/tempsense`
+     - LightCont: 
+       - Main topic: `esp32/lightcontrol/state`
+       - Individual relay topics: `esp32/lightcontrol/{pin_number}/state`
 
 ## 📁 Repository Structure
 
@@ -141,7 +176,7 @@ MicroPython-ESP32-Projects/
 ├── BreakSense/
 │   └── BreakSense.py     # Brake sensor monitoring code
 ├── LightCont/
-│   └── .gitkeep          # Placeholder for upcoming project
+│   └── LightCont.py      # Light controller with relay and button support
 ├── TempSense/
 │   └── TempSense.py      # Temperature/humidity monitoring code
 ├── .gitignore            # Git ignore configuration
