@@ -64,6 +64,7 @@ def connect_mqtt():
         client.publish(MQTT_TOPIC.encode(), b'ONLINE', retain=True, qos=0)
         return client
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Failed to connect to MQTT broker:', e)
         return None
 
@@ -86,6 +87,7 @@ def init_sensor():
         # Additional sensor setup can be added here
         return i2c, SENSOR_ADDR
     except Exception as e:
+        sys.print_exception(e)
         print("Failed to initialize I2C sensor:", e)
         return None
 
@@ -108,6 +110,7 @@ def read_sensor(i2c, addr):
         return temperature, humidity
     except Exception as e:
         debug_print("Failed to read sensor data:", e)
+        sys.print_exception(e)
         return None, None
 
 def main():
@@ -160,6 +163,7 @@ def main():
                         last_sent_temp = ema_temp
                         last_sent_humidity = ema_humidity
                     except Exception as e:
+                    sys.print_exception(e)
                         debug_print('Failed to publish MQTT message:', e)
                         client = None  # Force reconnect on next loop
                 else:

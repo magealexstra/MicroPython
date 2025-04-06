@@ -59,6 +59,7 @@ def connect_mqtt():
         client.publish(MQTT_TOPIC.encode(), b'ONLINE', retain=True, qos=0)
         return client
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Failed to connect to MQTT broker:', e)
         return None
 
@@ -97,6 +98,7 @@ def main():
                         client.publish(MQTT_TOPIC.encode(), msg)
                         debug_print('Published:', msg)
                     except Exception as e:
+                        sys.print_exception(e)
                         debug_print('Failed to publish MQTT message:', e)
                         client = None  # Force reconnect on next loop
                 else:

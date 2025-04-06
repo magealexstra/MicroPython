@@ -95,6 +95,7 @@ def connect_mqtt(client_id):
             
         return client
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Failed to connect to MQTT broker:', e)
         return None
 
@@ -180,6 +181,7 @@ def set_relay(pin_num, state):
         debug_print('Relay {} set to {}'.format(pin_num, state))
         publish_state(pin_num)
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Failed to set relay state for pin {}: {}'.format(pin_num, e))
 
 def publish_state(pin_num):
@@ -195,6 +197,7 @@ def publish_state(pin_num):
         mqtt_client.publish(get_state_topic(pin_num).encode(), state.encode(), retain=True, qos=0)
         debug_print('Published state:', state)
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Failed to publish state for pin {}: {}'.format(pin_num, e))
         mqtt_client = None  # Force reconnect on next loop
 
@@ -236,6 +239,7 @@ def mqtt_callback(topic, msg):
             debug_print('Could not parse pin number from topic:', topic_str)
             
     except Exception as e:
+        sys.print_exception(e)
         debug_print('Error in MQTT callback:', e)
 
 def main():
@@ -316,6 +320,7 @@ def main():
             try:
                 mqtt_client.check_msg()  # Non-blocking check for new messages
             except Exception as e:
+        sys.print_exception(e)
                 debug_print('MQTT error:', e)
                 mqtt_client = None  # Force reconnect on next loop
         
