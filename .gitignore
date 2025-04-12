@@ -177,6 +177,10 @@ cython_debug/
 # Ignore specific project design plans
 LivingRoomIOT/DesignPlan.md
 
+# Ignore Data directory and all subfolders
+Data/
+Data/**
+
 # Ignore editor/script tools
 editscript
 editprompt.md
