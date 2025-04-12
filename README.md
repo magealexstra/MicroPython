@@ -68,12 +68,16 @@ A temperature and humidity monitoring system that uses I2C sensors with the ESP3
 
 ### LightCont
 
-A relay-based light controller system for ESP32 with both MQTT and physical button control.
+A relay-based light controller system for ESP32 with both MQTT and physical control options.
 
 **Features:**
 - Wi-Fi and MQTT connectivity with automatic reconnection
 - Support for multiple relay-controlled lights/devices
-- Physical momentary switch control with debouncing
+- Unique MQTT topics per device based on MAC address (avoid conflicts in multi-device setups)
+- Support for both types of physical controls:
+  - Momentary push buttons (toggle on each press)
+  - Static toggle switches (light state follows switch position)
+- Light sensor support with automatic light control based on ambient brightness
 - Flexible button-to-relay mapping (control specific lights with buttons)
 - Topic-based control for individual relays
 - MQTT state updates whenever relay states change
@@ -83,20 +87,29 @@ A relay-based light controller system for ESP32 with both MQTT and physical butt
 
 **Configuration Options:**
 - `RELAY_PINS` - List of GPIO pins connected to relays
-- `BUTTON_PINS` - List of GPIO pins connected to momentary switches
+- `BUTTON_PINS` - List of GPIO pins connected to buttons/switches
 - `BUTTON_RELAY_MAP` - Mapping dictionary defining which button controls which relay
+- `BUTTON_TYPES` - Dictionary defining button type ("momentary" or "static") for each pin
+- `MQTT_USE_DEVICE_ID` - Boolean to enable/disable unique device-specific topics (default: `True`)
+- `LIGHT_SENSOR_PIN` - GPIO pin for analog light sensor (optional)
+- `LIGHT_THRESHOLD` - Light level threshold for automatic control (default: `500`)
+- `LIGHT_CHECK_INTERVAL` - Seconds between light sensor checks (default: `10`)
+- `LIGHT_CONTROLLED_RELAYS` - List of relay pins to control automatically with light sensor
 - `DEBOUNCE_MS` - Button debounce time in milliseconds (default: `300`)
 - `MAX_CONNECTION_RETRIES` - Maximum reconnection attempts before device reset
 
 **How It Works:**
-1. Initializes relay outputs and button inputs (with pull-up resistors)
+1. Initializes relay outputs, button inputs (with pull-up resistors), and light sensor (if configured)
 2. Connects to Wi-Fi and MQTT broker with Last Will message
-3. Subscribes to command topics for each relay
-4. Monitors for MQTT commands to control relays
-5. Detects button presses with edge detection and debouncing
-6. Toggles corresponding relay state when button is pressed
-7. Publishes state changes to MQTT whenever a relay changes
-8. Automatically reconnects with exponential backoff if connections drop
+3. Creates unique MQTT topics using the device's MAC address to avoid conflicts
+4. Subscribes to command topics for each relay
+5. Monitors for MQTT commands to control relays
+6. Processes physical controls based on their type:
+   - Momentary buttons: toggle relay state on press
+   - Static switches: relay directly follows switch position
+7. Checks light sensor (if configured) and automatically controls specified relays based on brightness
+8. Publishes state changes to MQTT whenever a relay changes
+9. Automatically reconnects with exponential backoff if connections drop
 
 ### LivingRoomIOT
 
