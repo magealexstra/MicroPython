@@ -320,7 +320,7 @@ def main():
             try:
                 mqtt_client.check_msg()  # Non-blocking check for new messages
             except Exception as e:
-        sys.print_exception(e)
+                sys.print_exception(e)
                 debug_print('MQTT error:', e)
                 mqtt_client = None  # Force reconnect on next loop
         
