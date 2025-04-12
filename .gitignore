@@ -186,3 +186,7 @@ Testing/
 **/test_*.py
 **/*_test.py
 **/*test*.py
+
+# Ignore internal data/documentation folders
+Data/
+Data/**
