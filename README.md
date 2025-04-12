@@ -13,6 +13,7 @@ A collection of MicroPython projects designed for ESP32 microcontrollers with va
   - [TempSense](#tempsense)
   - [LightCont](#lightcont)
   - [LivingRoomIOT](#livingroomiot)
+  - [WifiDetect](#wifidetect)
 - [🔄 Shared Configuration](#-shared-configuration)
 - [⬇️ Installation](#️-installation)
 - [🚀 Usage](#-usage)
@@ -155,6 +156,32 @@ A comprehensive living room automation system integrating temperature/humidity s
     e. Checks for incoming MQTT messages (relay commands).
     f. Sleeps for `LOOP_DELAY`.
 
+### WifiDetect
+
+A lightweight WiFi network scanner for ESP8266 microcontroller with OLED display. Shows available 2.4GHz networks and their signal strengths.
+
+**Features:**
+- Continuous WiFi network scanning
+- Real-time display of network names and signal strengths
+- Signal strength shown as percentage
+- Clean, minimalist display format
+- Memory-optimized for ESP8266 hardware
+- Display of up to 4 networks simultaneously
+- 10-second scan interval
+
+**Technical Details:**
+- ESP8266 ESP-12F microcontroller (2.4GHz WiFi only)
+- SSD1306 0.96" OLED display (I2C: SDA on D1/GPIO5, SCL on D2/GPIO4)
+- Ultra-minimal memory footprint for stable operation
+- Optimized for power efficiency
+
+**How It Works:**
+1. Initializes hardware (OLED display, WiFi)
+2. Continuously scans for available 2.4GHz WiFi networks
+3. Displays network names and signal strength percentages
+4. Sorts networks by signal strength (strongest first)
+5. Updates display information every 10 seconds
+
 ## 🔄 Shared Configuration
 
 All projects use a common `secrets.py` file for sensitive configuration values.
@@ -201,13 +228,23 @@ MQTT_PORT = 1883                  # Default MQTT port
      - Default Buttons: GPIO4, 15, 16, 17 (with pull-up resistors)
      - Default Door Sensor: GPIO2 (with pull-up resistor)
      - Customize pin assignments and other constants in `LivingRoomIOT.py`.
+   - **WifiDetect**: Connect OLED display and set up ESP8266 ESP-12F board.
+     - OLED Display: SDA on D1 (GPIO5), SCL on D2 (GPIO4)
+     - Five buttons: FLATH (GPIO0), RSET (hardware), D5 (GPIO14), D6 (GPIO12), D7 (GPIO13)
+     - Battery monitoring via ADC (A0)
+     - Charging indicator on D4 (GPIO2)
 
-4. **Upload to ESP32**
+4. **Upload to ESP32/ESP8266**
    Using tools like `ampy`, `rshell`, or Thonny IDE:
    ```bash
    # Example with ampy for LivingRoomIOT
    ampy --port /dev/ttyUSB0 put secrets.py
    ampy --port /dev/ttyUSB0 put LivingRoomIOT/LivingRoomIOT.py /LivingRoomIOT.py
+   
+   # Example with ampy for WifiDetect on ESP8266
+   ampy --port /dev/ttyUSB0 put secrets.py
+   ampy --port /dev/ttyUSB0 put WifiDetect/ssd1306.py /ssd1306.py  # OLED display driver
+   ampy --port /dev/ttyUSB0 put WifiDetect/WifiDetect.py /WifiDetect.py
    ```
 
 ## 🚀 Usage
@@ -216,19 +253,19 @@ Each project runs independently on an ESP32. After uploading the files, you can:
 
 1. **Start the script**
    ```python
-   # On the ESP32 REPL
-   import TempSense  # or BreakSense, LightCont, LivingRoomIOT
+   # On the ESP32/ESP8266 REPL
+   import TempSense  # or BreakSense, LightCont, LivingRoomIOT, WifiDetect
    ```
 
 2. **For automatic startup**
-   Create a `main.py` file on your ESP32:
+   Create a `main.py` file on your ESP32/ESP8266:
    ```python
    # Choose which project to run
-   import TempSense  # or BreakSense, LightCont, LivingRoomIOT
+   import TempSense  # or BreakSense, LightCont, LivingRoomIOT, WifiDetect
    ```
 
-3. **Monitoring**
-   - Use an MQTT client to subscribe to the respective topics:
+3. **Monitoring and Interaction**
+   - For MQTT-based projects, use an MQTT client to subscribe to the respective topics:
      - BreakSense: `esp32/breaksense`
      - TempSense: `esp32/tempsense`
      - LightCont:
@@ -239,6 +276,11 @@ Each project runs independently on an ESP32. After uploading the files, you can:
        - Door: `livingroom/door`
        - Relay Commands: `livingroom/relay/{pin_number}/command`
        - Relay States: `livingroom/relay/{pin_number}/state`
+   - For WifiDetect:
+     - View the top WiFi networks on the OLED display
+     - Networks are automatically sorted by signal strength
+     - Display updates every 10 seconds without user interaction
+     - Shows up to 4 networks simultaneously
 
 ## 📁 Repository Structure
 
@@ -253,6 +295,9 @@ MicroPython-ESP32-Projects/
 │   └── LivingRoomIOT.py  # Integrated living room automation script
 ├── TempSense/
 │   └── TempSense.py      # Temperature/humidity monitoring code
+├── WifiDetect/
+│   ├── WifiDetect.py     # WiFi network scanner with OLED display
+│   └── ssd1306.py        # OLED display driver
 ├── .gitignore            # Git ignore configuration
 ├── LICENSE               # MIT License file
 ├── README.md             # This documentation file
