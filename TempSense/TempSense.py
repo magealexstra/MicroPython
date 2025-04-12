@@ -163,7 +163,7 @@ def main():
                         last_sent_temp = ema_temp
                         last_sent_humidity = ema_humidity
                     except Exception as e:
-                    sys.print_exception(e)
+                        sys.print_exception(e)
                         debug_print('Failed to publish MQTT message:', e)
                         client = None  # Force reconnect on next loop
                 else:
