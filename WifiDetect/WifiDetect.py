@@ -1,5 +1,5 @@
 """
-Ultra-minimal WiFi Scanner for ESP8266 with OLED Display
+WiFi Scanner for ESP8266 with OLED Display
 Displays network names and signal strength (2.4GHz only due to ESP8266 hardware limitation)
 """
 import network
@@ -47,7 +47,7 @@ def main():
             current_time = time.time()
             if current_time - last_scan_time >= SCAN_INTERVAL:
                 try:
-                    # Scan networks silently - no display update during scan
+                    # Scan networks silently
                     gc.collect()
                     
                     # Do the scan (ESP8266 only supports 2.4GHz)
@@ -96,8 +96,6 @@ def main():
                     # Display network name and signal
                     display.text(f"{name}", 0, y_pos, 1)
                     display.text(f"{signal}%", 90, y_pos, 1)
-                
-                # No counter at bottom to avoid confusion
                 
                 # Update display
                 display.show()
