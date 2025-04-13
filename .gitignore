@@ -194,3 +194,7 @@ Testing/
 # Ignore internal data/documentation folders
 Data/
 Data/**
+
+# Ignore specific project copies
+GuestRoom/
+GuestRoom/**
