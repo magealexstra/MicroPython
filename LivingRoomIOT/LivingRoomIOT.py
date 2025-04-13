@@ -43,13 +43,18 @@ except ImportError:
 # Debug settings
 DEBUG = False  # [CONFIG] Set to True to see detailed logs (helpful for troubleshooting)
 
+# Time Synchronization Settings
+NTP_SYNC_INTERVAL = 3600  # [CONFIG] Seconds between NTP sync attempts if initial sync fails
+FALLBACK_TO_LOCAL_TIME = True  # [CONFIG] Use local timekeeping if NTP unavailable
+
 # MQTT Configuration
 MQTT_TOPIC_PREFIX = 'livingroom'        # [CONFIG] Base prefix for all MQTT topics for this device type
 MQTT_USE_DEVICE_ID = True               # [CONFIG] Set True to include unique device ID (last 5 MAC digits) in topics
                                         #          e.g., livingroom/abc12/sensor vs livingroom/sensor
-MQTT_TOPIC_SENSOR = 'sensor'            # [CONFIG] Sub-topic for publishing temp/humidity data (appended to prefix/device_id)
+MQTT_TOPIC_TEMPERATURE = 'temperature'  # [CONFIG] Sub-topic for publishing temperature data (appended to prefix/device_id)
+MQTT_TOPIC_HUMIDITY = 'humidity'        # [CONFIG] Sub-topic for publishing humidity data (appended to prefix/device_id)
 # MQTT_TOPIC_DOOR = 'door'                # [CONFIG] Sub-topic for publishing door open/close state (appended to prefix/device_id) - Replaced by SENSOR_CONFIG
-MQTT_TOPIC_LIGHT_SENSOR = 'light'       # [CONFIG] Sub-topic for publishing light sensor readings (appended to prefix/device_id) - NOTE: This is no longer published by default
+MQTT_TOPIC_LIGHT_SENSOR = 'livingroomlight' # [CONFIG] Sub-topic for publishing light sensor readings (appended to prefix/device_id) - NOTE: This is no longer published by default
 MQTT_TOPIC_DAYLIGHT_EVENT = 'daylight_event' # [CONFIG] Sub-topic for publishing DAY/NIGHT transition events
 # Relay topics are generated dynamically using prefix, device_id (optional), pin number, and command/state
 # Generic Open/Close Sensor topics are defined in SENSOR_CONFIG below
@@ -100,14 +105,19 @@ BUTTON_DEBOUNCE_MS = 300  # [CONFIG] Minimum time between valid button/switch ch
 
 # Generic Open/Close Sensor Configuration
 SENSOR_CONFIG = {
-    "door": {
-        "pin": 2,      # [CONFIG] GPIO pin for door sensor. None = disabled.
-        "topic": "door", # [CONFIG] MQTT sub-topic for this sensor.
+    "frontdoor": { # Renamed from "door"
+        "pin": 2,      # [CONFIG] GPIO pin for front door sensor. None = disabled.
+        "topic": "frontdoor", # [CONFIG] MQTT sub-topic for this sensor.
         "debounce_ms": 300 # [CONFIG] Debounce time in milliseconds.
     },
-    "window": {
-        "pin": None,   # [CONFIG] GPIO pin for window sensor (e.g., 14). None = disabled.
-        "topic": "window",
+    "livingroomwindow1": { # Renamed from "window"
+        "pin": None,   # [CONFIG] GPIO pin for first living room window sensor. None = disabled (placeholder).
+        "topic": "livingroomwindow1", # [CONFIG] MQTT sub-topic for this sensor.
+        "debounce_ms": 300
+    },
+    "livingroomwindow2": { # Added second window sensor
+        "pin": None,   # [CONFIG] GPIO pin for second living room window sensor. None = disabled (placeholder).
+        "topic": "livingroomwindow2", # [CONFIG] MQTT sub-topic for this sensor.
         "debounce_ms": 300
     },
     # Add more sensors here if needed, e.g., "garage_door": {"pin": 15, "topic": "garage", "debounce_ms": 500}
@@ -126,10 +136,6 @@ relays = {}                 # Dictionary to store relay Pin objects, keyed by GP
 buttons = {}                # Dictionary to store button Pin objects, keyed by GPIO pin number. e.g., {4: Pin(4, Pin.IN, Pin.PULL_UP)}
 last_button_states = {}     # Dictionary to track the last known state (0 or 1) of each button for debouncing. e.g., {4: 1}
 last_button_times = {}      # Dictionary to track the timestamp (milliseconds) of the last valid button state change for debouncing. e.g., {4: 12345678}
-# door_sensor = None          # Holds the Pin object for the door sensor. - Replaced by sensors dict
-# last_door_state = None      # Tracks the last known state (0 or 1) of the door sensor for debouncing. - Replaced by last_sensor_states dict
-# last_door_time = 0          # Tracks the timestamp (milliseconds) of the last valid door sensor state change for debouncing. - Replaced by last_sensor_times dict
-light_sensor = None         # Holds the ADC object for the light sensor if enabled.
 last_light_check = 0        # Tracks timestamp (milliseconds) of the last light sensor check for automatic control interval.
 
 # Generic Sensor State (Internal)
@@ -149,9 +155,17 @@ was_previously_night = None # Tracks the light state (True=Night, False=Day) fro
 #------------------------------------------------------------------------------
 
 def debug_print(*args, **kwargs):
-    """Prints debug messages only if DEBUG is enabled."""
+    """Prints debug messages only if DEBUG is enabled.
+    
+    Optimized for memory usage by joining strings before printing.
+    """
     if DEBUG:
-        print(*args, **kwargs)
+        # Join messages with a space to reduce memory impact
+        message = " ".join(str(arg) for arg in args)
+        # Limit message length to reduce memory pressure
+        if len(message) > 100:
+            message = message[:97] + "..."
+        print(message)
 
 def get_device_id_str():
     """Gets the unique identifier for this device from its MAC address.
@@ -244,9 +258,13 @@ def get_relay_state_topic(pin_num):
     """Gets the state topic string for a specific relay pin."""
     return f'{get_base_topic()}/relay/{pin_num}/state'
 
-def get_sensor_topic():
-    """Gets the topic string for publishing SHT31 sensor data."""
-    return f'{get_base_topic()}/{MQTT_TOPIC_SENSOR}'
+def get_temperature_topic():
+    """Gets the topic string for publishing SHT31 temperature data."""
+    return f'{get_base_topic()}/{MQTT_TOPIC_TEMPERATURE}'
+
+def get_humidity_topic():
+    """Gets the topic string for publishing SHT31 humidity data."""
+    return f'{get_base_topic()}/{MQTT_TOPIC_HUMIDITY}'
 
 # def get_door_topic(): # Replaced by get_sensor_topic(sensor_name)
 #     """Gets the topic string for publishing door sensor state."""
@@ -358,8 +376,8 @@ def connect_mqtt():
         # Publish the initial state of all initialized relays
         for relay_pin in relays:
             publish_relay_state(relay_pin)
-        # Publish initial door state
-        publish_door_state()
+        # Publish initial door state - Removed erroneous call, handled by publish_sensor_state loop later
+        # publish_door_state()
         # Publish initial light sensor reading (if enabled)
         if light_sensor:
              publish_light_sensor_reading()
@@ -416,24 +434,7 @@ def publish_sensor_state(sensor_name):
         debug_print(f"Failed to publish {sensor_name} sensor state: {e}")
         mqtt_client = None # Signal to reconnect
 
-def publish_sht31_data(temp, hum):
-    """Publishes the SHT31 temperature and humidity data."""
-    global mqtt_client, last_sent_temp, last_sent_humidity
-    if mqtt_client is None:
-        debug_print("MQTT client not available, skipping SHT31 publish.")
-        return
-    try:
-        payload = f'{{"temperature": {temp:.2f}, "humidity": {hum:.2f}}}'
-        topic = get_sensor_topic()
-        mqtt_client.publish(topic.encode(), payload.encode(), retain=False, qos=0) # Sensor data usually not retained
-        debug_print(f"Published SHT31 data '{payload}' to topic '{topic}'")
-        # Update last sent values only on successful publish
-        last_sent_temp = temp
-        last_sent_humidity = hum
-    except Exception as e:
-        sys.print_exception(e)
-        debug_print(f"Failed to publish SHT31 data: {e}")
-        mqtt_client = None # Signal to reconnect
+# Removed publish_sht31_data function
 
 def publish_light_sensor_reading():
     """Reads and publishes the current analog light sensor reading."""
@@ -787,32 +788,58 @@ def check_sensor(sensor_name):
             # debug_print(f"Sensor '{sensor_name}' change ignored due to debounce.")
 
 def check_sht31_sensor(i2c, addr):
-    """Reads SHT31, applies EMA smoothing, and publishes if thresholds are met."""
-    global ema_temp, ema_humidity # Need to modify globals
-    if i2c is None: return # Skip if I2C not initialized
+    """Reads SHT31, applies EMA smoothing, and publishes temp/humidity independently if thresholds are met."""
+    global mqtt_client, ema_temp, ema_humidity, last_sent_temp, last_sent_humidity # Need to modify globals
+    if i2c is None or mqtt_client is None:
+        debug_print("Skipping SHT31 check: I2C or MQTT not ready.")
+        return # Skip if I2C not initialized or MQTT not connected
 
     temperature, humidity = read_sht31_sensor(i2c, addr)
     if temperature is not None and humidity is not None:
         # Apply EMA smoothing
-        if ema_temp is None: # First reading
-            ema_temp = temperature
-        else:
-            ema_temp = EMA_ALPHA * temperature + (1 - EMA_ALPHA) * ema_temp
+        prev_ema_temp = ema_temp
+        prev_ema_humidity = ema_humidity
 
-        if ema_humidity is None: # First reading
-            ema_humidity = humidity
-        else:
-            ema_humidity = EMA_ALPHA * humidity + (1 - EMA_ALPHA) * ema_humidity
+        if ema_temp is None: ema_temp = temperature
+        else: ema_temp = EMA_ALPHA * temperature + (1 - EMA_ALPHA) * ema_temp
 
-        # Check if change exceeds threshold for publishing
+        if ema_humidity is None: ema_humidity = humidity
+        else: ema_humidity = EMA_ALPHA * humidity + (1 - EMA_ALPHA) * ema_humidity
+
+        # --- Temperature Check & Publish (Option A) ---
         temp_change = abs((last_sent_temp if last_sent_temp is not None else ema_temp) - ema_temp)
-        humidity_change = abs((last_sent_humidity if last_sent_humidity is not None else ema_humidity) - ema_humidity)
-
-        if (last_sent_temp is None) or (temp_change >= TEMP_THRESHOLD) or (humidity_change >= HUMIDITY_THRESHOLD):
-             debug_print(f"SHT31 threshold met (T_diff={temp_change:.2f}, H_diff={humidity_change:.2f}). Publishing.")
-             publish_sht31_data(ema_temp, ema_humidity)
+        if (last_sent_temp is None) or (temp_change >= TEMP_THRESHOLD):
+            debug_print(f"SHT31 Temperature threshold met (T_diff={temp_change:.2f}). Publishing.")
+            try:
+                temp_topic = get_temperature_topic()
+                mqtt_client.publish(temp_topic.encode(), f"{ema_temp:.2f}".encode(), retain=False, qos=0)
+                debug_print(f"Published Temperature '{ema_temp:.2f}' to topic '{temp_topic}'")
+                last_sent_temp = ema_temp # Update last sent value only on success
+            except Exception as e:
+                sys.print_exception(e)
+                debug_print(f"Failed to publish Temperature data: {e}")
+                mqtt_client = None # Signal to reconnect
         else:
-             debug_print(f"SHT31 threshold not met (T_diff={temp_change:.2f}, H_diff={humidity_change:.2f}). Skipping publish.")
+             debug_print(f"SHT31 Temperature threshold not met (T_diff={temp_change:.2f}). Skipping publish.")
+
+        # --- Humidity Check & Publish (Option A) ---
+        # Ensure MQTT client is still valid after potential temp publish error
+        if mqtt_client is not None:
+            humidity_change = abs((last_sent_humidity if last_sent_humidity is not None else ema_humidity) - ema_humidity)
+            if (last_sent_humidity is None) or (humidity_change >= HUMIDITY_THRESHOLD):
+                debug_print(f"SHT31 Humidity threshold met (H_diff={humidity_change:.2f}). Publishing.")
+                try:
+                    hum_topic = get_humidity_topic()
+                    mqtt_client.publish(hum_topic.encode(), f"{ema_humidity:.2f}".encode(), retain=False, qos=0)
+                    debug_print(f"Published Humidity '{ema_humidity:.2f}' to topic '{hum_topic}'")
+                    last_sent_humidity = ema_humidity # Update last sent value only on success
+                except Exception as e:
+                    sys.print_exception(e)
+                    debug_print(f"Failed to publish Humidity data: {e}")
+                    mqtt_client = None # Signal to reconnect
+            else:
+                 debug_print(f"SHT31 Humidity threshold not met (H_diff={humidity_change:.2f}). Skipping publish.")
+
     else:
         debug_print('Invalid SHT31 sensor data received, skipping processing.')
 
@@ -866,16 +893,6 @@ def check_light_sensor():
                     elif not is_currently_night and current_relay_state_val == 1:
                         debug_print(f"Day detected (Level {light_level} >= {LIGHT_THRESHOLD}), turning OFF relay {pin_num}")
                         set_relay(pin_num, 'OFF')
-
-                # If it's dark (reading below threshold) and light is off, turn it on
-                if light_level < LIGHT_THRESHOLD and current_relay_state_val == 0:
-                    debug_print(f"Dark detected (Level {light_level} < {LIGHT_THRESHOLD}), turning ON relay {pin_num}")
-                    set_relay(pin_num, 'ON')
-
-                # If it's bright (reading above threshold) and light is on, turn it off
-                elif light_level >= LIGHT_THRESHOLD and current_relay_state_val == 1:
-                    debug_print(f"Bright detected (Level {light_level} >= {LIGHT_THRESHOLD}), turning OFF relay {pin_num}")
-                    set_relay(pin_num, 'OFF')
 
 #------------------------------------------------------------------------------
 # MAIN EXECUTION
@@ -946,10 +963,11 @@ def main():
 
     print("Initialization complete. Entering main loop...")
 
-    # Connection retry counters and backoff time
+    # Connection retry counters and separate backoff times
     wifi_retry_count = 0
     mqtt_retry_count = 0
-    backoff_time = LOOP_DELAY
+    wifi_backoff_time = LOOP_DELAY
+    mqtt_backoff_time = LOOP_DELAY
 
     while True:
         try:
@@ -961,9 +979,9 @@ def main():
                 wlan = connect_wifi() # Attempt reconnection
 
                 if not wlan.isconnected():
-                    backoff_time = min(60, LOOP_DELAY * (2 ** wifi_retry_count)) # Increase max backoff
-                    print(f"Wi-Fi reconnection failed. Waiting {backoff_time}s...")
-                    time.sleep(backoff_time)
+                    wifi_backoff_time = min(60, LOOP_DELAY * (2 ** wifi_retry_count)) # Increase max backoff
+                    print(f"Wi-Fi reconnection failed. Waiting {wifi_backoff_time}s...")
+                    time.sleep(wifi_backoff_time)
                     if wifi_retry_count >= MAX_CONNECTION_RETRIES:
                         print("Max Wi-Fi retries reached. Restarting device.")
                         time.sleep(1)
@@ -971,7 +989,7 @@ def main():
                 else:
                     print("Wi-Fi reconnected.")
                     wifi_retry_count = 0
-                    backoff_time = LOOP_DELAY
+                    wifi_backoff_time = LOOP_DELAY
                     # Reconnect MQTT immediately after Wi-Fi comes back up
                     if mqtt_client is None:
                          print("Attempting MQTT reconnect after Wi-Fi restored...")
@@ -986,9 +1004,9 @@ def main():
                 mqtt_client = connect_mqtt() # Attempt reconnection
 
                 if mqtt_client is None:
-                    backoff_time = min(60, LOOP_DELAY * (2 ** mqtt_retry_count)) # Increase max backoff
-                    print(f"MQTT reconnection failed. Waiting {backoff_time}s...")
-                    time.sleep(backoff_time)
+                    mqtt_backoff_time = min(60, LOOP_DELAY * (2 ** mqtt_retry_count)) # Increase max backoff
+                    print(f"MQTT reconnection failed. Waiting {mqtt_backoff_time}s...")
+                    time.sleep(mqtt_backoff_time)
                     if mqtt_retry_count >= MAX_CONNECTION_RETRIES:
                         print("Max MQTT retries reached. Restarting device.")
                         time.sleep(1)
@@ -996,13 +1014,31 @@ def main():
                 else:
                     print("MQTT reconnected.")
                     mqtt_retry_count = 0
-                    backoff_time = LOOP_DELAY
+                    mqtt_backoff_time = LOOP_DELAY
 
             # --- Sensor Checks (only if connected and time potentially synced) ---
             if wlan.isconnected() and mqtt_client is not None:
-                # Attempt time sync periodically if it failed initially? (Optional enhancement)
-                # if not time_synced:
-                #     time_synced = sync_time()
+                # Attempt NTP time sync periodically if initial sync failed
+                current_epoch = time.time()
+                if not time_synced and (current_epoch % NTP_SYNC_INTERVAL < LOOP_DELAY):
+                    print(f"Attempting scheduled NTP sync...")
+                    time_synced = sync_time()
+                    if time_synced:
+                        print("Time successfully synchronized with NTP.")
+                        # Re-publish initial daylight state with correct timestamp if light sensor enabled
+                        if light_sensor:
+                            initial_light_level = read_light_sensor()
+                            if initial_light_level is not None:
+                                global was_previously_night
+                                was_previously_night = initial_light_level < LIGHT_THRESHOLD
+                                initial_event = "NIGHT" if was_previously_night else "DAY"
+                                try:
+                                    initial_utc_epoch = time.time()
+                                    publish_daylight_event(initial_event, initial_utc_epoch)
+                                    print(f"Published initial daylight state: {initial_event}")
+                                except Exception as e:
+                                    sys.print_exception(e)
+                                    print("Failed to publish initial daylight state after NTP sync:", e)
 
                 check_sht31_sensor(i2c, sht31_addr)
                 # Only check light sensor transitions if time has been synced at least once
