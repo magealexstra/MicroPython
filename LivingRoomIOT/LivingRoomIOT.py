@@ -1,33 +1,33 @@
 ###############################################################################
 # Living Room IoT Controller - ESP32 MicroPython
 #
-# Description: Manages various sensors and relays in a living room environment.
-#              Connects to WiFi, communicates via MQTT, and handles local inputs.
+# Description:
+#     Manages sensors and relays in a living room environment.
+#     Connects to Wi-Fi, communicates via MQTT, and handles physical inputs.
+#     Designed for resource-constrained ESP32 running MicroPython.
 #
 # Features:
-# - WiFi connectivity
-# - MQTT communication for sensor data and relay control
-# - SHT31 Temperature & Humidity sensor reading with EMA smoothing
-# - Door open/close detection using a magnetic reed switch
-# - Analog Light Sensor reading and optional relay control
-# - Control of multiple relays via MQTT commands and physical buttons/switches
-# - Support for both momentary buttons and static toggle switches
-# - Explicit Button-to-Relay mapping
-# - Unique device ID based on MAC address for MQTT topics (optional)
-# - Debouncing for button and door sensor inputs
-# - Automatic reconnection for WiFi and MQTT
-# - Exponential backoff for connection retries
-# - Optional debug logging
+# - Wi-Fi connectivity with automatic reconnection
+# - MQTT communication with QoS 0 for efficiency
+# - SHT31 temperature/humidity readings with EMA smoothing
+# - Generic open/close sensor support with input debouncing
+# - Analog light sensor with automatic relay control
+# - Multiple relay control via MQTT and physical inputs
+# - Momentary button and static switch support
+# - Explicit mapping of physical inputs to relays
+# - Unique device ID based on MAC address
+# - Connection retry with exponential backoff
+# - Configurable debug logging
 ###############################################################################
 
-import network     # Handles WiFi connectivity
-import time        # Time functions (delays, timers)
-import ubinascii   # Converts binary data to hex and vice versa
-import sys         # System functions
-import ntptime     # Network Time Protocol synchronization
-import json        # For creating JSON payloads
-from machine import Pin, I2C, ADC, reset  # Hardware control: Pins, I2C, ADC, Reset
-from umqtt.simple import MQTTClient  # MQTT protocol for IoT messaging
+import network     # WiFi connectivity (STA_IF = station mode)
+import time        # Time functions (ticks_ms for timing, sleep for delays)
+import ubinascii   # Binary/hex conversion (smaller than binascii)
+import sys         # System functions and error handling
+import ntptime     # NTP time sync (no dependencies)
+import json        # JSON for MQTT payloads (memory efficient)
+from machine import Pin, I2C, ADC, reset  # ESP32 hardware control
+from umqtt.simple import MQTTClient  # Lightweight MQTT client
 
 # Import secrets (Wi-Fi credentials, MQTT broker info)
 try:
@@ -37,9 +37,41 @@ except ImportError:
     raise
 
 #------------------------------------------------------------------------------
-# CONFIGURATION SETTINGS - ADJUST THESE FOR YOUR SETUP
-#------------------------------------------------------------------------------
+# Configuration Settings - adjust these for your setup
+# ------------------------------------------------------------------------------
+ 
+# Debug settings (impacts memory usage when enabled)
+DEBUG = False  # Set True for verbose logging (increases memory usage)
+ 
+# MQTT configuration (affects topic structure)
+MQTT_TOPIC_PREFIX = 'livingroom'  # Base topic prefix
+MQTT_USE_DEVICE_ID = True         # Add device ID to topics for multi-device setups
+MQTT_TOPIC_SENSOR = 'sensor'      # Temperature/humidity data subtopic
+MQTT_TOPIC_LIGHT_SENSOR = 'light' # Light sensor readings subtopic
+MQTT_TOPIC_DAYLIGHT_EVENT = 'daylight_event'  # Day/night transition events
+ 
+# I2C settings for SHT31 sensor (ESP32 hardware I2C)
+I2C_SCL_PIN = 22         # GPIO pin for I2C clock line
+I2C_SDA_PIN = 21         # GPIO pin for I2C data line
+I2C_FREQ = 100000        # 100kHz - standard mode, reliable for most sensors
+SENSOR_ADDR = 0x44       # SHT31 default I2C address (0x45 alternate)
+ 
+# SHT31 sensor processing (reduces network traffic)
+EMA_ALPHA = 0.1          # Lower values = more smoothing, less memory fluctuation
+TEMP_THRESHOLD = 0.3     # Minimum change to trigger MQTT publish
+HUMIDITY_THRESHOLD = 1.0 # Minimum change to trigger MQTT publish
+ 
+# Light sensor settings (ESP32 ADC, 12-bit resolution 0-4095)
+LIGHT_SENSOR_PIN = None           # Set to ADC pin number or None to disable
+LIGHT_THRESHOLD = 500             # ADC value threshold for day/night detection
+LIGHT_CHECK_INTERVAL = 10         # Limits processing and network load
+LIGHT_CONTROLLED_RELAYS = []      # Relay pins for automatic light control
+ 
+# GPIO pin configuration (ESP32 specific pins)
+RELAY_PINS = [5, 18, 19, 23]       # Digital output pins for relay control
+BUTTON_PINS = [4, 15, 16, 17]      # Digital input pins with pull-up
 
+<<<<<<< HEAD
 # Debug settings
 DEBUG = False  # [CONFIG] Set to True to see detailed logs (helpful for troubleshooting)
 
@@ -89,22 +121,28 @@ BUTTON_RELAY_MAP = {
     16: 19,  # Button on pin 16 controls relay on pin 19
     17: 23,  # Button on pin 17 controls relay on pin 23
     # Add or modify mappings as needed
+=======
+# Button-to-relay mapping (links physical inputs to outputs)
+BUTTON_RELAY_MAP = {               # Which button controls which relay
+    4: 5,    # Button on GPIO 4 controls relay on GPIO 5
+    15: 18,  # Button on GPIO 15 controls relay on GPIO 18
+    16: 19,  # Button on GPIO 16 controls relay on GPIO 19
+    17: 23,  # Button on GPIO 17 controls relay on GPIO 23
+>>>>>>> a6fd1f8 (Update changes)
 }
-# [CONFIG] Defines the type of input connected to each button pin. "momentary" or "static".
-BUTTON_TYPES = {
-    4: "momentary",  # Pin 4 is a push button (toggles on press)
-    15: "momentary", # Pin 15 is a push button
-    16: "static",    # Pin 16 is a toggle switch (follows position)
-    17: "momentary", # Pin 17 is a push button
-    # Add or modify types as needed, ensure keys match BUTTON_PINS and BUTTON_RELAY_MAP
+BUTTON_TYPES = {                   # Defines button behavior
+    4: "momentary",   # Toggle on press and release (push button)
+    15: "momentary",  # Toggle on press and release (push button)
+    16: "static",     # Follow switch position (on/off switch)
+    17: "momentary",  # Toggle on press and release (push button)
 }
-
-# Debounce Settings (Milliseconds) - Prevents false triggers from noisy signals
-BUTTON_DEBOUNCE_MS = 300  # [CONFIG] Minimum time between valid button/switch changes
-# DOOR_DEBOUNCE_MS = 300    # [CONFIG] Minimum time between valid door state changes - Replaced by SENSOR_CONFIG
-
-# Generic Open/Close Sensor Configuration
+ 
+# Debounce settings (prevents spurious triggers)
+BUTTON_DEBOUNCE_MS = 300           # Ignores changes within this window
+ 
+# Generic open/close sensor configuration (extensible)
 SENSOR_CONFIG = {
+<<<<<<< HEAD
     "frontdoor": { # Renamed from "door"
         "pin": 2,      # [CONFIG] GPIO pin for front door sensor. None = disabled.
         "topic": "frontdoor", # [CONFIG] MQTT sub-topic for this sensor.
@@ -119,14 +157,34 @@ SENSOR_CONFIG = {
         "pin": None,   # [CONFIG] GPIO pin for second living room window sensor. None = disabled (placeholder).
         "topic": "livingroomwindow2", # [CONFIG] MQTT sub-topic for this sensor.
         "debounce_ms": 300
+=======
+    "door": {
+        "pin": 2,                  # Use None to disable this sensor
+        "topic": "door",           # MQTT topic suffix for this sensor
+        "debounce_ms": 300,        # Prevents false triggers from noise
     },
-    # Add more sensors here if needed, e.g., "garage_door": {"pin": 15, "topic": "garage", "debounce_ms": 500}
+    "window": {
+        "pin": None,               # Disabled by default
+        "topic": "window",         # Ready for future use
+        "debounce_ms": 300,        # Standard debounce time
+>>>>>>> a6fd1f8 (Update changes)
+    },
 }
+ 
+# Main loop and connection settings
+LOOP_DELAY = 1                     # Controls CPU usage and responsiveness
+MAX_CONNECTION_RETRIES = 10        # Prevents boot loops, triggers reset after failures
+ 
+# ------------------------------------------------------------------------------
+# Global variables - internal state tracking
+# ------------------------------------------------------------------------------
+# Device identity
+device_id = None            # Last 5 MAC digits, set during initialization
 
-# Timing and Connection Settings
-LOOP_DELAY = 1  # [CONFIG] Main loop delay in seconds (affects responsiveness and sensor read frequency)
-MAX_CONNECTION_RETRIES = 10  # [CONFIG] Max attempts to reconnect WiFi/MQTT before restarting device
+# Network connections
+mqtt_client = None          # MQTTClient instance when connected, None when disconnected
 
+<<<<<<< HEAD
 #------------------------------------------------------------------------------
 # GLOBAL VARIABLES - INTERNAL STATE TRACKING (DO NOT MODIFY)
 #------------------------------------------------------------------------------
@@ -137,18 +195,27 @@ buttons = {}                # Dictionary to store button Pin objects, keyed by G
 last_button_states = {}     # Dictionary to track the last known state (0 or 1) of each button for debouncing. e.g., {4: 1}
 last_button_times = {}      # Dictionary to track the timestamp (milliseconds) of the last valid button state change for debouncing. e.g., {4: 12345678}
 last_light_check = 0        # Tracks timestamp (milliseconds) of the last light sensor check for automatic control interval.
+=======
+# Hardware objects - initialized at runtime to save memory
+relays = {}                 # {pin_num: Pin(pin_num, Pin.OUT)}
+buttons = {}                # {pin_num: Pin(pin_num, Pin.IN, Pin.PULL_UP)}
+light_sensor = None         # ADC object when enabled, None otherwise
+>>>>>>> a6fd1f8 (Update changes)
 
-# Generic Sensor State (Internal)
-sensors = {}                # Stores Pin objects, keyed by sensor name ("door", "window", etc.)
-last_sensor_states = {}     # Stores last state (0 or 1), keyed by sensor name
-last_sensor_times = {}      # Stores last timestamp (ms), keyed by sensor name
+# State tracking dictionaries - more memory efficient than class objects
+last_button_states = {}     # {pin_num: state} - 1=released, 0=pressed (pull-up)
+last_button_times = {}      # {pin_num: timestamp} - for debouncing in ticks_ms
+last_light_check = 0        # Timestamp for rate-limiting light sensor checks
+sensors = {}                # {name: Pin} - generic sensor pin objects
+last_sensor_states = {}     # {name: state} - sensor state (1=open, 0=closed)
+last_sensor_times = {}      # {name: timestamp} - sensor state change time
 
-# Variables for EMA (Exponential Moving Average) smoothing and threshold-based publishing (SHT31)
-ema_temp = None             # Stores the calculated smoothed temperature value.
-ema_humidity = None         # Stores the calculated smoothed humidity value.
-last_sent_temp = None       # Stores the last temperature value published via MQTT to check against the threshold.
-last_sent_humidity = None   # Stores the last humidity value published via MQTT to check against the threshold.
-was_previously_night = None # Tracks the light state (True=Night, False=Day) from the previous check for event detection.
+# Sensor data processing
+ema_temp = None             # Smoothed temperature using EMA algorithm
+ema_humidity = None         # Smoothed humidity using EMA algorithm
+last_sent_temp = None       # Last published temperature for threshold comparison
+last_sent_humidity = None   # Last published humidity for threshold comparison
+was_previously_night = None # Previous light state for transition detection
 
 #------------------------------------------------------------------------------
 # UTILITY FUNCTIONS
@@ -157,7 +224,12 @@ was_previously_night = None # Tracks the light state (True=Night, False=Day) fro
 def debug_print(*args, **kwargs):
     """Prints debug messages only if DEBUG is enabled.
     
+<<<<<<< HEAD
     Optimized for memory usage by joining strings before printing.
+=======
+    Prevents unnecessary string formatting when debugging is off,
+    reducing memory usage in normal operation.
+>>>>>>> a6fd1f8 (Update changes)
     """
     if DEBUG:
         # Join messages with a space to reduce memory impact
@@ -168,35 +240,35 @@ def debug_print(*args, **kwargs):
         print(message)
 
 def get_device_id_str():
-    """Gets the unique identifier for this device from its MAC address.
+    """Gets a unique device identifier from the MAC address.
 
-    Used for unique MQTT topics if MQTT_USE_DEVICE_ID is True.
+    Uses the network module to access the MAC address without
+    requiring additional storage. Extracts only the last 5 characters
+    to keep topic strings short while maintaining uniqueness.
 
     Returns:
-        str: Last 5 characters of the device's MAC address.
+        str: Last 5 characters of the MAC address (10 hex digits would be overkill)
     """
-    wlan = network.WLAN(network.STA_IF)
-    mac = wlan.config('mac')  # Get MAC address as raw bytes
-    mac_hex = ubinascii.hexlify(mac).decode()  # Convert to hexadecimal string
-    return mac_hex[-5:]  # Extract the last 5 characters
+    wlan = network.WLAN(network.STA_IF)  # Station interface
+    mac = wlan.config('mac')  # Raw byte representation of MAC
+    mac_hex = ubinascii.hexlify(mac).decode()  # Convert to hex string
+    return mac_hex[-5:]  # Last 5 chars (unique enough for home use)
 
 def sync_time():
-    """Synchronizes the device's internal clock using NTP. Requires Wi-Fi."""
+    """Synchronizes the device's internal clock using NTP.
+
+    Returns:
+        bool: True if synchronization succeeded, False otherwise.
+    """
     print("Attempting to sync time with NTP...")
-    # Add retry logic here if desired, especially if NTP fails occasionally
     try:
-        # Set the NTP server if needed (optional, defaults usually work)
-        # ntptime.host = 'pool.ntp.org'
         ntptime.settime() # Blocks until time is set or error occurs
-        # time.localtime() uses the RTC which is now set to UTC
-        print("Time synchronized successfully (UTC):", time.localtime()) # Keep this print as it's useful info
+        print("Time synchronized successfully (UTC):", time.localtime())
         return True
     except Exception as e:
-        # Non-critical: Log details only if DEBUG is True
         if DEBUG:
             sys.print_exception(e)
         debug_print("Failed to sync time with NTP:", e)
-        # Consider how to handle time sync failure - maybe retry later?
         return False
 
 def get_unique_client_id():
@@ -225,7 +297,7 @@ def connect_wifi():
     if not wlan.isconnected():
         print('Connecting to Wi-Fi...')
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
-        # Wait until connection is established
+        # Wait for connection to establish
         while not wlan.isconnected():
             time.sleep(0.5)
         print('Connected to Wi-Fi:', wlan.ifconfig())
@@ -266,11 +338,7 @@ def get_humidity_topic():
     """Gets the topic string for publishing SHT31 humidity data."""
     return f'{get_base_topic()}/{MQTT_TOPIC_HUMIDITY}'
 
-# def get_door_topic(): # Replaced by get_sensor_topic(sensor_name)
-#     """Gets the topic string for publishing door sensor state."""
-#     return f'{get_base_topic()}/{MQTT_TOPIC_DOOR}'
-
-def get_sensor_topic(sensor_name):
+def get_specific_sensor_topic(sensor_name):
     """Gets the MQTT topic string for a specific generic sensor."""
     if sensor_name in SENSOR_CONFIG and "topic" in SENSOR_CONFIG[sensor_name]:
         return f'{get_base_topic()}/{SENSOR_CONFIG[sensor_name]["topic"]}'
@@ -376,8 +444,13 @@ def connect_mqtt():
         # Publish the initial state of all initialized relays
         for relay_pin in relays:
             publish_relay_state(relay_pin)
+<<<<<<< HEAD
         # Publish initial door state - Removed erroneous call, handled by publish_sensor_state loop later
         # publish_door_state()
+=======
+        # Publish initial door state
+        publish_sensor_state("door")
+>>>>>>> a6fd1f8 (Update changes)
         # Publish initial light sensor reading (if enabled)
         if light_sensor:
              publish_light_sensor_reading()
@@ -391,7 +464,11 @@ def connect_mqtt():
         return None
 
 def publish_relay_state(relay_pin):
-    """Publishes the current state (ON/OFF) of a specific relay to its MQTT state topic."""
+    """Publishes the current state (ON/OFF) of a specific relay to its MQTT state topic.
+    
+    Uses retained messages (retain=True) to ensure subscribers receive the last known
+    state immediately upon connection. QoS 0 is used for minimal overhead on the ESP32.
+    """
     global mqtt_client
     if mqtt_client is None or relay_pin not in relays:
         debug_print(f"MQTT client not available or relay {relay_pin} not initialized, skipping state publish.")
@@ -406,12 +483,13 @@ def publish_relay_state(relay_pin):
         debug_print(f"Failed to publish relay state for pin {relay_pin}: {e}")
         mqtt_client = None # Signal to reconnect
 
-# def publish_door_state(): # Replaced by publish_sensor_state(sensor_name)
-#     """Publishes the current state (OPEN/CLOSED) of the door sensor."""
-#     ... (old code removed) ...
-
 def publish_sensor_state(sensor_name):
-    """Publishes the current state (OPEN/CLOSED) of a generic sensor."""
+    """Publishes the current state (OPEN/CLOSED) of a generic sensor.
+    
+    Uses retained messages (retain=True) to ensure Home Assistant or other subscribers
+    receive the current state immediately on connection. Handles pull-up resistor
+    logic (1=OPEN, 0=CLOSED) for standardized MQTT messaging.
+    """
     global mqtt_client # Uses global mqtt_client
     if mqtt_client is None or sensor_name not in sensors:
         debug_print(f"MQTT client or sensor '{sensor_name}' not available, skipping state publish.")
@@ -425,7 +503,7 @@ def publish_sensor_state(sensor_name):
 
         # Assuming PULL_UP: 1 = OPEN (switch open), 0 = CLOSED (switch closed)
         state_str = 'OPEN' if current_state else 'CLOSED'
-        topic = get_sensor_topic(sensor_name)
+        topic = get_specific_sensor_topic(sensor_name)
         if topic:
             mqtt_client.publish(topic.encode(), state_str.encode(), retain=True, qos=0)
             debug_print(f"Published {sensor_name} state '{state_str}' to topic '{topic}'")
@@ -434,10 +512,42 @@ def publish_sensor_state(sensor_name):
         debug_print(f"Failed to publish {sensor_name} sensor state: {e}")
         mqtt_client = None # Signal to reconnect
 
+<<<<<<< HEAD
 # Removed publish_sht31_data function
+=======
+def publish_sht31_data(temp, hum):
+    """Publishes the SHT31 temperature and humidity data.
+    
+    Formats temperature and humidity as a JSON payload for compatibility with
+    Home Assistant auto-discovery. Uses non-retained messages (retain=False) 
+    as sensor data is frequently updated. QoS 0 minimizes network overhead
+    on the ESP32's limited resources.
+    """
+    global mqtt_client, last_sent_temp, last_sent_humidity
+    if mqtt_client is None:
+        debug_print("MQTT client not available, skipping SHT31 publish.")
+        return
+    try:
+        payload = f'{{"temperature": {temp:.2f}, "humidity": {hum:.2f}}}'
+        topic = get_sensor_topic()
+        mqtt_client.publish(topic.encode(), payload.encode(), retain=False, qos=0) # Sensor data usually not retained
+        debug_print(f"Published SHT31 data '{payload}' to topic '{topic}'")
+        # Update last sent values only on successful publish
+        last_sent_temp = temp
+        last_sent_humidity = hum
+    except Exception as e:
+        sys.print_exception(e)
+        debug_print(f"Failed to publish SHT31 data: {e}")
+        mqtt_client = None # Signal to reconnect
+>>>>>>> a6fd1f8 (Update changes)
 
 def publish_light_sensor_reading():
-    """Reads and publishes the current analog light sensor reading."""
+    """Reads and publishes the current analog light sensor reading.
+    
+    Provides raw ADC values rather than interpreted values to allow
+    for flexible threshold configuration on the receiving end. Uses
+    non-retained messages since light readings are frequently updated.
+    """
     global mqtt_client
     if mqtt_client is None or light_sensor is None:
         debug_print("MQTT client or light sensor not available, skipping light reading publish.")
@@ -454,7 +564,12 @@ def publish_light_sensor_reading():
         mqtt_client = None # Signal to reconnect
 
 def publish_daylight_event(event_type, utc_timestamp):
-    """Publishes a DAY or NIGHT event with the UTC timestamp."""
+    """Publishes a DAY or NIGHT event with the UTC timestamp.
+    
+    Uses retained messages (retain=True) to ensure new subscribers can 
+    immediately determine the current daylight state. JSON format includes 
+    UTC timestamp to allow for time-based automations and analysis.
+    """
     global mqtt_client
     if mqtt_client is None:
         debug_print("MQTT client not available, skipping daylight event publish.")
@@ -478,6 +593,11 @@ def publish_daylight_event(event_type, utc_timestamp):
 
 def set_relay(pin_num, state):
     """Sets the state of a specific relay and publishes the change via MQTT.
+    
+    Handles error cases gracefully to prevent crashing when hardware issues occur.
+    Only publishes state changes to MQTT when the hardware state actually changes,
+    reducing network traffic. GPIO pins are completely abstracted through the Pin 
+    class for cross-compatibility.
 
     Args:
         pin_num (int): The GPIO pin number of the relay.
@@ -507,7 +627,13 @@ def set_relay(pin_num, state):
 #------------------------------------------------------------------------------
 
 def init_relays():
-    """Initializes all configured relay pins."""
+    """Initializes all configured relay pins.
+    
+    Creates Pin objects for each defined relay pin from RELAY_PINS list. 
+    Sets all relays to OFF state initially for safety. Handles individual 
+    initialization failures gracefully to allow the system to continue 
+    running even if some relays aren't properly connected.
+    """
     global relays
     print("Initializing relays...")
     count = 0
@@ -524,7 +650,13 @@ def init_relays():
     print(f"Initialized {count}/{len(RELAY_PINS)} relays.")
 
 def init_buttons():
-    """Initializes configured button/switch pins based on BUTTON_RELAY_MAP."""
+    """Initializes configured button/switch pins based on BUTTON_RELAY_MAP.
+    
+    Creates Pin objects for input pins with internal pull-up resistors activated.
+    Sets up initial state tracking for debouncing. Validates button-to-relay 
+    mapping to detect configuration issues early during initialization rather 
+    than during runtime operation when issues would be harder to diagnose.
+    """
     global buttons, last_button_states, last_button_times
     print("Initializing buttons/switches...")
     count = 0
@@ -553,12 +685,17 @@ def init_buttons():
 
     print(f"Initialized {count} buttons/switches.")
 
-# def init_door_sensor(): # Replaced by init_sensor(sensor_name, config)
-#     """Initializes the door sensor pin."""
-#     ... (old code removed) ...
-
 def init_sensor(sensor_name, config):
-    """Initializes a generic open/close sensor based on configuration."""
+    """Initializes a generic open/close sensor based on configuration.
+    
+    Creates Pin objects with pull-up resistors for door/window sensors where
+    CLOSED=0 (circuit complete) and OPEN=1 (circuit broken). Safely handles
+    disabled sensors (pin=None) and initialization failures. Records initial 
+    state and debounce timing information for state change detection.
+    
+    Returns:
+        bool: True if initialization successful, False otherwise.
+    """
     # Uses global dictionaries: sensors, last_sensor_states, last_sensor_times
     global sensors, last_sensor_states, last_sensor_times
 
@@ -586,7 +723,15 @@ def init_sensor(sensor_name, config):
         return False # Indicate failure
 
 def init_sht31_sensor():
-    """Initializes the I2C communication and checks for the SHT31 sensor."""
+    """Initializes the I2C communication and checks for the SHT31 sensor.
+    
+    Creates an I2C bus on specified pins and scans for connected devices.
+    Verifies SHT31 presence at the expected address. The ESP32's hardware
+    I2C interface is used for reliable timing and communication.
+    
+    Returns:
+        tuple: (I2C object, SHT31 address) if successful, (None, None) if failed
+    """
     print("Initializing I2C SHT31 sensor...")
     try:
         # Initialize I2C bus (using ID 0 for ESP32)
@@ -606,7 +751,13 @@ def init_sht31_sensor():
         return None, None
 
 def init_light_sensor():
-    """Initializes the analog light sensor if configured."""
+    """Initializes the analog light sensor if configured.
+    
+    Creates an ADC object on the specified pin. Configures 11dB attenuation
+    for full 0-3.3V input range on ESP32. The light sensor is essential for 
+    daylight detection and automatic relay control features. Safely handles
+    both disabled configuration (LIGHT_SENSOR_PIN=None) and hardware failures.
+    """
     global light_sensor
     if LIGHT_SENSOR_PIN is None:
         debug_print("Analog light sensor disabled (LIGHT_SENSOR_PIN not set).")
@@ -619,14 +770,13 @@ def init_light_sensor():
         pin = Pin(LIGHT_SENSOR_PIN)
         adc = ADC(pin)
 
-        # Configure ADC attenuation for full voltage range (0-3.3V on ESP32)
-        # ATTN_11DB gives full range
+        # Configure ADC attenuation for full voltage range (0-3.3V)
         try:
             adc.atten(ADC.ATTN_11DB)
             debug_print("Set ADC attenuation to 11dB (0-3.3V range)")
         except AttributeError:
-            debug_print("Warning: Could not set ADC attenuation (might not be supported on this board/firmware).")
-            pass # Continue anyway, might work with default range
+            debug_print("Warning: Could not set ADC attenuation.")
+            pass # Continue with default range
 
         light_sensor = adc
         print(f"Analog light sensor initialized on GPIO {LIGHT_SENSOR_PIN}.")
@@ -645,14 +795,24 @@ def init_light_sensor():
 #------------------------------------------------------------------------------
 
 def read_sht31_sensor(i2c, addr):
-    """Reads temperature and humidity from the SHT31 sensor."""
+    """Reads temperature and humidity from the SHT31 sensor.
+    
+    Implements the SHT31 I2C protocol directly:
+    1. Sends 0x2400 command for high repeatability measurement
+    2. Waits for measurement conversion completion
+    3. Reads the 6-byte response (2 bytes temp, 1 byte CRC, 2 bytes humidity, 1 byte CRC)
+    4. Converts raw values to temperature/humidity using datasheet formulas
+    
+    Contains validation to detect potentially erroneous readings (all 0xFF or 0x00)
+    which can occur during I2C communication errors.
+    """
     if i2c is None:
         return None, None
     try:
         # Send measurement command (0x2400 = Clock Stretching, High Repeatability)
         i2c.writeto(addr, b'\x24\x00')
-        # Wait for measurement to complete (datasheet suggests max 15ms for high repeatability)
-        time.sleep(0.02) # Use slightly longer delay
+        # Wait for measurement to complete
+        time.sleep(0.02)
         # Read 6 bytes of data: Temp MSB, Temp LSB, Temp CRC, Hum MSB, Hum LSB, Hum CRC
         data = i2c.readfrom(addr, 6)
 
@@ -681,6 +841,11 @@ def read_sht31_sensor(i2c, addr):
 
 def read_light_sensor():
     """Reads the current value from the analog light sensor.
+    
+    ESP32 ADC provides 12-bit resolution (0-4095 values). Error handling 
+    prevents crashes if the sensor becomes disconnected. The raw ADC value
+    is returned without conversion to allow flexible interpretation by 
+    different parts of the code.
 
     Returns:
         int: The raw ADC reading (typically 0-4095), or None if sensor disabled/error.
@@ -701,7 +866,16 @@ def read_light_sensor():
 #------------------------------------------------------------------------------
 
 def check_buttons():
-    """Checks button/switch states, debounces, and controls relays via BUTTON_RELAY_MAP."""
+    """Checks button/switch states, debounces, and controls relays via BUTTON_RELAY_MAP.
+    
+    Implements time-based debouncing using time.ticks_ms() and ticks_diff() for 
+    efficient timing comparisons. Uses different logic paths for:
+    - Momentary buttons: Toggles relays only on press (not release)
+    - Static switches: Directly follows switch position
+    
+    Handles various error cases such as unmapped buttons and missing relays
+    to prevent crashes during reconfiguration.
+    """
     current_time = time.ticks_ms()
     for button_pin, button in buttons.items(): # Iterate through initialized buttons
         current_state = button.value()
@@ -744,14 +918,14 @@ def check_buttons():
             # Update last known state
             last_button_states[button_pin] = current_state
 
-# def check_door_sensor(): # Replaced by check_sensor(sensor_name)
-#     """Checks the state of the door sensor, debounces, and publishes changes via MQTT."""
-#     ... (old code removed) ...
-
 def check_sensor(sensor_name):
-    """Checks the state of a generic sensor, debounces, and publishes changes."""
-    # Uses global dictionaries: sensors, last_sensor_states, last_sensor_times
-    # Uses SENSOR_CONFIG for debounce value
+    """Checks the state of a generic sensor, debounces, and publishes changes.
+    
+    Uses time-based debouncing with configurable periods per sensor type.
+    Only publishes when state changes occur after the debounce period,
+    which reduces MQTT traffic. Safely handles hardware read errors by
+    skipping the current check cycle rather than crashing.
+    """
     global last_sensor_states, last_sensor_times
 
     if sensor_name not in sensors:
@@ -763,17 +937,14 @@ def check_sensor(sensor_name):
     debounce_ms = SENSOR_CONFIG.get(sensor_name, {}).get("debounce_ms", 300) # Default debounce
 
     current_time = time.ticks_ms()
-    current_state = None # Initialize to None
+    current_state = None
     try:
         current_state = sensor_pin.value()
     except Exception as e:
-        # Non-critical: Log details only if DEBUG is True
         if DEBUG:
             sys.print_exception(e)
         debug_print(f"Error reading sensor '{sensor_name}' pin value: {e}")
-        # Optionally, handle this error further, e.g., by trying to re-init the pin
-        # For now, we'll just skip processing this sensor for this cycle
-        return # Exit the check for this sensor this cycle
+        return # Skip this sensor for this cycle
 
     # Proceed only if reading was successful and state is different
     if current_state is not None and current_state != last_state:
@@ -781,18 +952,29 @@ def check_sensor(sensor_name):
         if time.ticks_diff(current_time, last_time) > debounce_ms:
             state_str = 'OPEN' if current_state else 'CLOSED'
             debug_print(f"Sensor '{sensor_name}' state changed to: {state_str}")
-            last_sensor_states[sensor_name] = current_state # Update state *before* publishing
+            last_sensor_states[sensor_name] = current_state # Update state before publishing
             last_sensor_times[sensor_name] = current_time   # Update time
             publish_sensor_state(sensor_name) # Publish the new debounced state
-        # else:
-            # debug_print(f"Sensor '{sensor_name}' change ignored due to debounce.")
 
 def check_sht31_sensor(i2c, addr):
+<<<<<<< HEAD
     """Reads SHT31, applies EMA smoothing, and publishes temp/humidity independently if thresholds are met."""
     global mqtt_client, ema_temp, ema_humidity, last_sent_temp, last_sent_humidity # Need to modify globals
     if i2c is None or mqtt_client is None:
         debug_print("Skipping SHT31 check: I2C or MQTT not ready.")
         return # Skip if I2C not initialized or MQTT not connected
+=======
+    """Reads SHT31, applies EMA smoothing, and publishes if thresholds are met.
+    
+    Uses Exponential Moving Average (EMA) to smooth sensor readings and
+    reduce noise. The smoothing factor (EMA_ALPHA) controls the balance
+    between responsiveness and stability. Publishes only when temperature
+    or humidity changes exceed configured thresholds, significantly
+    reducing network traffic and memory usage from frequent MQTT operations.
+    """
+    global ema_temp, ema_humidity # Need to modify globals
+    if i2c is None: return # Skip if I2C not initialized
+>>>>>>> a6fd1f8 (Update changes)
 
     temperature, humidity = read_sht31_sensor(i2c, addr)
     if temperature is not None and humidity is not None:
@@ -844,7 +1026,16 @@ def check_sht31_sensor(i2c, addr):
         debug_print('Invalid SHT31 sensor data received, skipping processing.')
 
 def check_light_sensor():
-    """Reads analog light sensor, detects DAY/NIGHT transitions, publishes events, and optionally controls relays."""
+    """Reads analog light sensor, detects DAY/NIGHT transitions, publishes events, and optionally controls relays.
+    
+    Rate-limited to LIGHT_CHECK_INTERVAL seconds to reduce CPU and network usage.
+    Requires NTP time synchronization for accurate event timestamps. Automatically
+    controls configured relays based on light levels, enabling automated lighting
+    without requiring an external home automation controller.
+    
+    The threshold-based approach with hysteresis prevents rapid switching
+    during edge conditions (dawn/dusk or fluctuating light).
+    """
     global last_light_check, was_previously_night # Add was_previously_night
     if light_sensor is None: return # Skip if disabled
 
@@ -894,13 +1085,33 @@ def check_light_sensor():
                         debug_print(f"Day detected (Level {light_level} >= {LIGHT_THRESHOLD}), turning OFF relay {pin_num}")
                         set_relay(pin_num, 'OFF')
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> a6fd1f8 (Update changes)
 #------------------------------------------------------------------------------
 # MAIN EXECUTION
 #------------------------------------------------------------------------------
 
 def main():
-    """Main program execution function."""
-    global mqtt_client, device_id # Need device_id for connect_mqtt
+    """Main program execution function.
+    
+    Orchestrates the entire application lifecycle:
+    1. Hardware initialization (relays, buttons, sensors)
+    2. Network setup (WiFi, MQTT, NTP)
+    3. Initial state publishing
+    4. Main operational loop with:
+       - Connection monitoring and recovery with exponential backoff
+       - Sensor data collection and threshold-based publishing
+       - Physical input processing (buttons/switches)
+       - Automatic relay control
+       
+    Implements restart strategy when reconnection fails, providing 
+    resilience against network outages. Uses memory-efficient techniques
+    like dictionary-based state tracking rather than classes, and
+    avoiding frequent string creation in tight loops.
+    """
+    global mqtt_client, device_id
 
     print("Starting Living Room IoT Controller...")
 
@@ -922,8 +1133,7 @@ def main():
         if init_sensor(name, config):
              initialized_sensors.append(name)
     print(f"Initialized {len(initialized_sensors)} generic sensors: {initialized_sensors}")
-    # init_door_sensor() # Replaced by loop above
-    i2c, sht31_addr = init_sht31_sensor() # Specific name
+    i2c, sht31_addr = init_sht31_sensor()
     init_light_sensor()
 
     # Connect to network services
@@ -931,7 +1141,7 @@ def main():
 
     # Synchronize time via NTP (requires Wi-Fi)
     time_synced = sync_time()
-    # We might want to handle the case where time sync fails, but for now proceed.
+    # Continue regardless of time sync success
 
     # Connect to MQTT (requires Wi-Fi)
     mqtt_client = connect_mqtt() # Handles initial relay state publishing
@@ -1018,6 +1228,7 @@ def main():
 
             # --- Sensor Checks (only if connected and time potentially synced) ---
             if wlan.isconnected() and mqtt_client is not None:
+<<<<<<< HEAD
                 # Attempt NTP time sync periodically if initial sync failed
                 current_epoch = time.time()
                 if not time_synced and (current_epoch % NTP_SYNC_INTERVAL < LOOP_DELAY):
@@ -1039,6 +1250,11 @@ def main():
                                 except Exception as e:
                                     sys.print_exception(e)
                                     print("Failed to publish initial daylight state after NTP sync:", e)
+=======
+                # Attempt NTP sync periodically if it failed initially
+                if not time_synced:
+                    time_synced = sync_time()
+>>>>>>> a6fd1f8 (Update changes)
 
                 check_sht31_sensor(i2c, sht31_addr)
                 # Only check light sensor transitions if time has been synced at least once
@@ -1049,7 +1265,6 @@ def main():
                 # Check generic sensors
                 for name in sensors:
                      check_sensor(name)
-                # check_door_sensor() # Replaced by loop above
                 check_buttons()
 
                 # Check for incoming MQTT messages
