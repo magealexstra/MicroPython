@@ -28,6 +28,8 @@ import ntptime     # NTP time sync (no dependencies)
 import json        # JSON for MQTT payloads (memory efficient)
 from machine import Pin, I2C, ADC, reset  # ESP32 hardware control
 from umqtt.simple import MQTTClient  # Lightweight MQTT client
+import aht
+
 
 # Import secrets (Wi-Fi credentials, MQTT broker info)
 try:
@@ -57,13 +59,13 @@ MQTT_TOPIC_DAYLIGHT_EVENT = 'daylight_event' # [CONFIG] Sub-topic for publishing
 # Relay topics are generated dynamically using prefix, device_id (optional), pin number, and command/state
 # Generic Open/Close Sensor topics are defined in SENSOR_CONFIG below
 
-# I2C Configuration for SHT31 Temperature/Humidity Sensor
+# I2C Configuration for AHT2x Temperature/Humidity Sensor
 I2C_SCL_PIN = 22    # [CONFIG] GPIO pin for I2C Clock (SCL)
 I2C_SDA_PIN = 21    # [CONFIG] GPIO pin for I2C Data (SDA)
 I2C_FREQ = 100000 # [CONFIG] I2C communication frequency in Hz
-SENSOR_ADDR = 0x44  # [CONFIG] I2C address of the SHT31 sensor
+SENSOR_ADDR = 0x38  # [CONFIG] I2C address for AHT2x sensor (common is 0x38 or 0x3F)
 
-# Sensor Reading & Smoothing Configuration (SHT31)
+# Sensor Reading & Smoothing Configuration (AHT2x)
 EMA_ALPHA = 0.1           # [CONFIG] Exponential Moving Average smoothing factor (0.0 to 1.0). Lower values = smoother but slower response.
 TEMP_THRESHOLD = 0.3      # [CONFIG] Minimum temperature change (degrees C) to trigger MQTT publish
 HUMIDITY_THRESHOLD = 1.0  # [CONFIG] Minimum humidity change (%) to trigger MQTT publish
@@ -75,23 +77,21 @@ LIGHT_CHECK_INTERVAL = 10   # [CONFIG] Seconds between light sensor checks for a
 LIGHT_CONTROLLED_RELAYS = []# [CONFIG] List of relay pins (e.g., [5, 18]) to be controlled by the light sensor. Empty = no auto control.
 
 # GPIO Pin Configuration
-RELAY_PINS = [5, 18, 19, 23]  # [CONFIG] List of GPIO pins connected to relays. MUST match relays controlled by buttons/light sensor.
-BUTTON_PINS = [4, 15, 16, 17] # [CONFIG] List of GPIO pins connected to physical buttons/switches. MUST match keys in BUTTON_RELAY_MAP and BUTTON_TYPES.
+RELAY_PINS = [15, 16, 17]  # [CONFIG] List of GPIO pins connected to relays. MUST match relays controlled by buttons/light sensor.
+BUTTON_PINS = [4, 5, 6] # [CONFIG] List of GPIO pins connected to physical buttons/switches. MUST match keys in BUTTON_RELAY_MAP and BUTTON_TYPES.
 
 # Button/Switch Configuration
 # [CONFIG] Defines which button/switch controls which relay. Format: {button_pin: relay_pin}
 BUTTON_RELAY_MAP = {
-    4: 5,    # Button on pin 4 controls relay on pin 5
-    15: 18,  # Button on pin 15 controls relay on pin 18
-    16: 19,  # Button on pin 16 controls relay on pin 19
-    17: 23,  # Button on pin 17 controls relay on pin 23
-    # Add or modify mappings as needed
+    4: 15,    # Button on pin 4 controls relay on pin 15
+    5: 16,  # Button on pin 5 controls relay on pin 16
+    6: 17,  # Button on pin 6 controls relay on pin 17
 }
-BUTTON_TYPES = {                   # Defines button behavior
-    4: "momentary",   # Toggle on press and release (push button)
-    15: "momentary",  # Toggle on press and release (push button)
-    16: "static",     # Follow switch position (on/off switch)
-    17: "momentary",  # Toggle on press and release (push button)
+BUTTON_TYPES = {
+    4: "momentary",  # Pin 4 is a push button (toggles on press)
+    5: "momentary", # Pin 5 is a push button
+    6: "momentary",    # Pin 6 is a momentary button
+        # use "momentary" and "static" as the button types
 }
  
 # Debounce settings (prevents spurious triggers)
@@ -128,6 +128,8 @@ mqtt_client = None          # Holds the MQTT client object after successful conn
 relays = {}                 # Dictionary to store relay Pin objects, keyed by GPIO pin number. e.g., {5: Pin(5, Pin.OUT)}
 buttons = {}                # Dictionary to store button Pin objects, keyed by GPIO pin number. e.g., {4: Pin(4, Pin.IN, Pin.PULL_UP)}
 light_sensor = None         # ADC object when enabled, None otherwise
+aht_sensor = None           # AHT2x sensor object when initialized, None otherwise
+
 last_button_states = {}     # {pin_num: state} - 1=released, 0=pressed (pull-up)
 last_button_times = {}      # {pin_num: timestamp} - for debouncing in ticks_ms
 sensors = {}                # {name: Pin} - generic sensor pin objects
@@ -283,6 +285,11 @@ def get_daylight_event_topic():
 # MQTT FUNCTIONS
 #------------------------------------------------------------------------------
 
+def get_button_event_topic():
+    """Gets the MQTT topic string for publishing button press events."""
+    return f'{get_base_topic()}/button_event'
+
+
 def mqtt_callback(topic, msg):
     """Handles incoming MQTT messages.
 
@@ -335,7 +342,7 @@ def connect_mqtt():
     global mqtt_client
     try:
         client_id = get_unique_client_id() # Ensure device_id is set here
-        client = MQTTClient(client_id, MQTT_BROKER, port=MQTT_PORT)
+        client = MQTTClient(client_id, MQTT_BROKER, port=MQTT_PORT, user=MQTT_USERNAME, password=MQTT_PASSWORD)
 
         # Set Last Will and Testament (LWT) on the main state topic
         main_state_topic = get_main_state_topic()
@@ -600,32 +607,6 @@ def init_sensor(sensor_name, config):
         if sensor_name in last_sensor_times: del last_sensor_times[sensor_name]
         return False # Indicate failure
 
-def init_sht31_sensor():
-    """Initializes the I2C communication and checks for the SHT31 sensor.
-
-    Creates an I2C bus on specified pins and scans for connected devices.
-    Verifies SHT31 presence at the expected address. The ESP32's hardware
-    I2C interface is used for reliable timing and communication.
-
-    Returns:
-        tuple: (I2C object, SHT31 address) if successful, (None, None) if failed
-    """
-    print("Initializing I2C SHT31 sensor...")
-    try:
-        # Initialize I2C bus (using ID 0 for ESP32)
-        i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=I2C_FREQ)
-        # Scan for connected I2C devices
-        devices = i2c.scan()
-        debug_print('I2C devices found:', [hex(device) for device in devices])
-        # Check if the expected sensor address is present
-        if SENSOR_ADDR not in devices:
-            print(f"SHT31 sensor not found at address {hex(SENSOR_ADDR)}. Check wiring and address.")
-            return None, None
-        print(f"SHT31 sensor found at address {hex(SENSOR_ADDR)}.")
-        return i2c, SENSOR_ADDR
-    except Exception as e:
-        print(f"Failed to initialize I2C SHT31 sensor: {type(e).__name__} - {str(e)}")
-        return None, None
 
 def init_light_sensor():
     """Initializes the analog light sensor if configured.
@@ -670,49 +651,6 @@ def init_light_sensor():
 # SENSOR READING FUNCTIONS
 #------------------------------------------------------------------------------
 
-def read_sht31_sensor(i2c, addr):
-    """Reads temperature and humidity from the SHT31 sensor.
-
-    Implements the SHT31 I2C protocol directly:
-    1. Sends 0x2400 command for high repeatability measurement
-    2. Waits for measurement conversion completion
-    3. Reads the 6-byte response (2 bytes temp, 1 byte CRC, 2 bytes humidity, 1 byte CRC)
-    4. Converts raw values to temperature/humidity using datasheet formulas
-
-    Contains validation to detect potentially erroneous readings (all 0xFF or 0x00)
-    which can occur during I2C communication errors.
-    """
-    if i2c is None:
-        return None, None
-    try:
-        # Send measurement command (0x2400 = Clock Stretching, High Repeatability)
-        i2c.writeto(addr, b'\x24\x00')
-        # Wait for measurement to complete
-        time.sleep(0.02)
-        # Read 6 bytes of data: Temp MSB, Temp LSB, Temp CRC, Hum MSB, Hum LSB, Hum CRC
-        data = i2c.readfrom(addr, 6)
-
-        # Combine MSB and LSB for temperature and humidity
-        temp_raw = (data[0] << 8) | data[1]
-        humidity_raw = (data[3] << 8) | data[4]
-
-        # Calculate temperature and humidity using datasheet formulas
-        temperature = -45.0 + (175.0 * temp_raw / 65535.0)
-        humidity = 100.0 * (humidity_raw / 65535.0)
-
-        debug_print(f"Raw Temp: {temp_raw}, Calc Temp: {temperature:.2f} C")
-        debug_print(f"Raw Hum: {humidity_raw}, Calc Hum: {humidity:.2f} %")
-
-        # Basic check for invalid readings (e.g., all FF or 00)
-        if temp_raw == 0xFFFF or humidity_raw == 0xFFFF or (temp_raw == 0 and humidity_raw == 0):
-             debug_print("Warning: SHT31 read potentially invalid data (0xFF or 0x00).")
-             # Return None if data looks invalid
-             return None, None
-
-        return temperature, humidity
-    except Exception as e:
-        debug_print(f"Failed to read SHT31 sensor data: {type(e).__name__} - {str(e)}")
-        return None, None
 
 def read_light_sensor():
     """Reads the current value from the analog light sensor.
@@ -762,6 +700,27 @@ def check_buttons():
                 # Get the type and mapped relay for this button
                 button_type = BUTTON_TYPES.get(button_pin, "momentary") # Default to momentary
                 relay_pin = BUTTON_RELAY_MAP.get(button_pin)
+                # --- Add this section to publish button event ---
+                global mqtt_client
+                if mqtt_client: # Check if MQTT client is connected
+                    try:
+                        # Create a payload with button information
+                        payload = json.dumps({
+                            "button_pin": button_pin,
+                            "button_type": button_type,
+                            "state": current_state # 0 for pressed (pull-up), 1 for released
+                        })
+                        topic = get_button_event_topic()
+                        mqtt_client.publish(topic.encode(), payload.encode(), retain=False, qos=0) # Don't retain button events
+                        debug_print(f"Published button event for pin {button_pin}: {payload}")
+                    except Exception as e:
+                        sys.print_exception(e)
+                        debug_print(f"Failed to publish button event for pin {button_pin}: {e}")
+                        # Optionally, set mqtt_client = None here to trigger a reconnect if publish fails
+                # --- End of added section ---
+
+
+
 
                 if relay_pin is None:
                      debug_print(f"Button {button_pin} changed state but is not in BUTTON_RELAY_MAP.")
@@ -827,54 +786,70 @@ def check_sensor(sensor_name):
             last_sensor_states[sensor_name] = current_state # Update state before publishing
             last_sensor_times[sensor_name] = current_time   # Update time
             publish_sensor_state(sensor_name) # Publish the new debounced state
+def check_aht2x_sensor():
+    """Reads AHT2x data, applies EMA, and publishes if thresholds are met."""
+    global aht_sensor, mqtt_client, ema_temp, ema_humidity, last_sent_temp, last_sent_humidity
 
-def check_sht31_sensor(i2c, addr):
-    """Reads SHT31, applies EMA smoothing, and publishes temp/humidity independently if thresholds are met."""
-    global mqtt_client, ema_temp, ema_humidity, last_sent_temp, last_sent_humidity # Need to modify globals
-    if i2c is None or mqtt_client is None:
-        debug_print("Skipping SHT31 check: I2C or MQTT not ready.")
-        return # Skip if I2C not initialized or MQTT not connected
-    
-    temperature, humidity = read_sht31_sensor(i2c, addr)
-    if temperature is not None and humidity is not None:
-        if ema_temp is None: ema_temp = temperature
-        else: ema_temp = EMA_ALPHA * temperature + (1 - EMA_ALPHA) * ema_temp
+    if aht_sensor is None or mqtt_client is None:
+        debug_print("Skipping AHT2x check: Sensor or MQTT not ready.")
+        return # Skip if sensor not initialized or MQTT not connected
 
-        if ema_humidity is None: ema_humidity = humidity
-        else: ema_humidity = EMA_ALPHA * humidity + (1 - EMA_ALPHA) * ema_humidity
+    try:
+        # Read temperature and humidity from AHT2x sensor
+        temperature = aht_sensor.temperature
+        humidity = aht_sensor.relative_humidity
 
-        temp_change = abs((last_sent_temp if last_sent_temp is not None else ema_temp) - ema_temp)
-        if (last_sent_temp is None) or (temp_change >= TEMP_THRESHOLD):
-            debug_print(f"SHT31 Temperature threshold met (T_diff={temp_change:.2f}). Publishing.")
-            try:
-                temp_topic = get_temperature_topic()
-                mqtt_client.publish(temp_topic.encode(), f"{ema_temp:.2f}".encode(), retain=False, qos=0)
-                debug_print(f"Published Temperature '{ema_temp:.2f}' to topic '{temp_topic}'")
-                last_sent_temp = ema_temp # Update last sent value only on success
-            except Exception as e:
-                debug_print(f"Failed to publish Temperature data: {type(e).__name__} - {str(e)}")
-                mqtt_client = None # Signal to reconnect
-        else:
-             debug_print(f"SHT31 Temperature threshold not met (T_diff={temp_change:.2f}). Skipping publish.")
-
-        # Ensure MQTT client is still valid after potential temp publish error
-        if mqtt_client is not None:
-            humidity_change = abs((last_sent_humidity if last_sent_humidity is not None else ema_humidity) - ema_humidity)
-            if (last_sent_humidity is None) or (humidity_change >= HUMIDITY_THRESHOLD):
-                debug_print(f"SHT31 Humidity threshold met (H_diff={humidity_change:.2f}). Publishing.")
-                try:
-                    hum_topic = get_humidity_topic()
-                    mqtt_client.publish(hum_topic.encode(), f"{ema_humidity:.2f}".encode(), retain=False, qos=0)
-                    debug_print(f"Published Humidity '{ema_humidity:.2f}' to topic '{hum_topic}'")
-                    last_sent_humidity = ema_humidity # Update last sent value only on success
-                except Exception as e:
-                    debug_print(f"Failed to publish Humidity data: {type(e).__name__} - {str(e)}")
-                    mqtt_client = None # Signal to reconnect
+        if temperature is not None and humidity is not None:
+            # Apply Exponential Moving Average (EMA)
+            if ema_temp is None:
+                ema_temp = temperature
+                ema_humidity = humidity
+                debug_print(f"EMA initialized (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
             else:
-                 debug_print(f"SHT31 Humidity threshold not met (H_diff={humidity_change:.2f}). Skipping publish.")
+                ema_temp = (EMA_ALPHA * temperature) + ((1 - EMA_ALPHA) * ema_temp)
+                ema_humidity = (EMA_ALPHA * humidity) + ((1 - EMA_ALPHA) * ema_humidity)
+                debug_print(f"EMA updated (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
 
-    else:
-        debug_print('Invalid SHT31 sensor data received, skipping processing.')
+            # Check if smoothed values exceed thresholds for publishing
+            temp_changed = last_sent_temp is None or abs(ema_temp - last_sent_temp) >= TEMP_THRESHOLD
+            humidity_changed = last_sent_humidity is None or abs(ema_humidity - last_sent_humidity) >= HUMIDITY_THRESHOLD
+
+            if mqtt_client and (temp_changed or humidity_changed):
+                debug_print("Threshold exceeded (AHT2x), publishing data.")
+                # Publish temperature if changed
+                if temp_changed:
+                    try:
+                        topic = get_temperature_topic()
+                        mqtt_client.publish(topic.encode(), f"{ema_temp:.2f}".encode(), retain=False, qos=0)
+                        last_sent_temp = ema_temp
+                        debug_print(f"Published temperature (AHT2x): {last_sent_temp:.2f} C to {topic}")
+                    except Exception as e:
+                        debug_print(f"Failed to publish temperature (AHT2x): {type(e).__name__} - {str(e)}")
+                        # Don't update last_sent_temp if publish fails
+                        mqtt_client = None # Signal to reconnect
+
+                # Publish humidity if changed
+                if humidity_changed:
+                    try:
+                        topic = get_humidity_topic()
+                        mqtt_client.publish(topic.encode(), f"{ema_humidity:.2f}".encode(), retain=False, qos=0)
+                        last_sent_humidity = ema_humidity
+                        debug_print(f"Published humidity (AHT2x): {last_sent_humidity:.2f} % to {topic}")
+                    except Exception as e:
+                        debug_print(f"Failed to publish humidity (AHT2x): {type(e).__name__} - {str(e)}")
+                        # Don't update last_sent_humidity if publish fails
+                        mqtt_client = None # Signal to reconnect
+
+        else:
+            debug_print('Invalid AHT2x sensor data received, skipping processing.')
+
+    except Exception as e:
+        debug_print(f"Error reading or processing AHT2x data: {type(e).__name__} - {str(e)}")
+        # Consider setting aht_sensor = None here if a permanent error is detected
+        # For now, just log and continue
+
+
+
 
 def check_light_sensor():
     """Reads analog light sensor, detects DAY/NIGHT transitions, publishes events, and optionally controls relays.
@@ -980,7 +955,6 @@ def main():
         if init_sensor(name, config):
              initialized_sensors.append(name)
     print(f"Initialized {len(initialized_sensors)} generic sensors: {initialized_sensors}")
-    i2c, sht31_addr = init_sht31_sensor()
     init_light_sensor()
 
     # Connect to network services
@@ -1025,7 +999,28 @@ def main():
     wifi_backoff_time = LOOP_DELAY
     mqtt_backoff_time = LOOP_DELAY
 
+    # Initialize I2C bus for AHT2x sensor (using ID 0 for ESP32)
+    print("Initializing I2C bus for AHT2x sensor...")
+    try:
+        i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=I2C_FREQ)
+        devices = i2c.scan()
+        debug_print('I2C devices found:', [hex(device) for device in devices])
+        if SENSOR_ADDR not in devices:
+            print(f"AHT2x sensor not found at address {hex(SENSOR_ADDR)}. Check wiring and address.")
+            # Continue even if sensor not found, but aht_sensor will remain None
+        else:
+            print(f"AHT2x sensor found at address {hex(SENSOR_ADDR)}.")
+            # Initialize AHT2x sensor
+            global aht_sensor
+            aht_sensor = aht.AHT20(i2c, address=SENSOR_ADDR)
+            print("AHT2x sensor initialized.")
+    except Exception as e:
+        print(f"Failed to initialize I2C bus or AHT2x sensor: {type(e).__name__} - {str(e)}")
+        # aht_sensor remains None
+
+
     while True:
+
         try:
             # --- Connection Management ---
             # Reconnect Wi-Fi if disconnected
@@ -1095,7 +1090,7 @@ def main():
                                 except Exception as e:
                                     print(f"Failed to publish initial daylight state after NTP sync: {type(e).__name__} - {str(e)}")
 
-                check_sht31_sensor(i2c, sht31_addr)
+                check_aht2x_sensor()
                 # Only check light sensor transitions if time has been synced at least once
                 if time_synced:
                      check_light_sensor()

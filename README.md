@@ -149,7 +149,7 @@ Controls multiple relays via MQTT commands or physical buttons/switches, with op
 A comprehensive living room automation system integrating temperature/humidity sensing, multi-relay control, physical inputs (buttons/switches), generic open/close sensor monitoring, and optional light-based automation. Designed for ESP32 but adaptable.
 
 **Features:**
-- 🌡️ **SHT31 Sensing:** Reads temperature & humidity via I2C.
+- 🌡️ **AHT2x Sensing:** Reads temperature & humidity via I2C (requires external library).
 - 💧 **Data Smoothing:** Applies Exponential Moving Average (EMA) to sensor readings.
 - 📉 **Threshold Publishing:** Only publishes sensor data when changes exceed configured thresholds.
 - 💡 **Relay Control:** Manages multiple relays via MQTT commands.
@@ -162,13 +162,14 @@ A comprehensive living room automation system integrating temperature/humidity s
 - 🕒 **Time Sync:** Synchronizes internal clock using NTP.
 - ⚙️ **Configuration:** Highly configurable via constants within the script and `secrets.py`.
 - 🐛 **Debugging:** Optional detailed logging.
+- 🔘 **Button Events:** Publishes physical button press events via MQTT.
 
 **Configuration Options (within `LivingRoomIOT.py`):**
 - `DEBUG`: Enable/disable verbose logging.
 - `MQTT_TOPIC_PREFIX`, `MQTT_USE_DEVICE_ID`: Control MQTT topic structure.
 - `MQTT_TOPIC_SENSOR`, `MQTT_TOPIC_LIGHT_SENSOR`, `MQTT_TOPIC_DAYLIGHT_EVENT`: Sub-topic names.
-- I2C settings: `I2C_SCL_PIN`, `I2C_SDA_PIN`, `I2C_FREQ`, `SENSOR_ADDR` (for SHT31).
-- SHT31 settings: `EMA_ALPHA`, `TEMP_THRESHOLD`, `HUMIDITY_THRESHOLD`.
+- I2C settings: `I2C_SCL_PIN`, `I2C_SDA_PIN`, `I2C_FREQ`, `SENSOR_ADDR` (for AHT2x).
+- AHT2x settings: `EMA_ALPHA`, `TEMP_THRESHOLD`, `HUMIDITY_THRESHOLD`.
 - Light Sensor settings: `LIGHT_SENSOR_PIN` (set to `None` to disable), `LIGHT_THRESHOLD`, `LIGHT_CHECK_INTERVAL`, `LIGHT_CONTROLLED_RELAYS`.
 - GPIO Pins: `RELAY_PINS`, `BUTTON_PINS`.
 - Input Mapping: `BUTTON_RELAY_MAP` (button pin -> relay pin), `BUTTON_TYPES` (pin -> "momentary" or "static").
@@ -178,28 +179,30 @@ A comprehensive living room automation system integrating temperature/humidity s
 
 **MQTT Topics (assuming `MQTT_USE_DEVICE_ID = True`, base = `livingroom/{device_id}`):**
 - Device Status: `{base}/state` (Publishes ONLINE/OFFLINE)
-- SHT31 Data: `{base}/sensor` (Publishes JSON `{"temperature": T, "humidity": H}`)
+- AHT2x Data: `{base}/sensor` (Publishes JSON `{"temperature": T, "humidity": H}`)
 - Generic Sensor State: `{base}/{sensor_topic}` (e.g., `{base}/door`, `{base}/window`. Publishes OPEN/CLOSED)
 - Light Sensor Reading: `{base}/light` (Publishes raw ADC value, optional)
 - Daylight Event: `{base}/daylight_event` (Publishes JSON `{"event": "DAY/NIGHT", "utc_timestamp": epoch}`)
 - Relay Command (All): `{base}/command` (Subscribes, expects ON/OFF)
 - Relay Command (Specific): `{base}/relay/{pin_number}/command` (Subscribes, expects ON/OFF)
 - Relay State (Specific): `{base}/relay/{pin_number}/state` (Publishes ON/OFF)
+- Button Event: `{base}/button_event` (Publishes JSON `{"button_pin": P, "button_type": T, "state": S}`)
 
 **How It Works:**
-1. Initializes hardware: Relays (OFF), Buttons (PULL_UP), Generic Sensors (PULL_UP), I2C SHT31, ADC Light Sensor (if enabled).
+1. Initializes hardware: Relays (OFF), Buttons (PULL_UP), Generic Sensors (PULL_UP), I2C AHT2x, ADC Light Sensor (if enabled).
 2. Connects to Wi-Fi, syncs time via NTP.
 3. Connects to MQTT broker (sets LWT, subscribes to command topics, publishes initial ONLINE status and sensor/relay states).
 4. Enters main loop:
     a. Checks Wi-Fi/MQTT connections, attempts reconnection with exponential backoff, resets device if max retries exceeded.
-    b. Reads SHT31, applies EMA, publishes to `{base}/sensor` if change exceeds thresholds.
+    b. Reads AHT2x, applies EMA, publishes to `{base}/sensor` if change exceeds thresholds.
     c. Checks physical buttons/switches (debounced), controls mapped relay based on type (momentary/static), publishes state to `{base}/relay/{pin}/state`.
     d. Checks generic sensors (debounced), publishes state change (OPEN/CLOSED) to `{base}/{sensor_topic}`.
-    e. Checks light sensor periodically (if enabled and time synced):
+    e. Checks physical buttons/switches (debounced), publishes button event to `{base}/button_event` and controls the mapped relay based on button type (momentary toggle or static follow), publishing new relay state to `{base}/relay/{pin}/state`.
+    f. Checks light sensor periodically (if enabled and time synced):
         i. Detects DAY/NIGHT transitions, publishes event to `{base}/daylight_event`.
         ii. Controls `LIGHT_CONTROLLED_RELAYS` based on `LIGHT_THRESHOLD`.
-    f. Checks for incoming MQTT messages (relay commands).
-    g. Sleeps for `LOOP_DELAY`.
+    g. Checks for incoming MQTT messages (relay commands).
+    h. Sleeps for `LOOP_DELAY`.
 
 ### WifiDetect
 
@@ -276,6 +279,7 @@ MQTT_PORT = 1883  # Default MQTT port (change if needed, e.g., 8883 for TLS)
     *   **Essential:** Upload the `secrets.py` file you prepared to the root directory of the device.
     *   Upload the main Python script for the project you want to run (e.g., `LightCont/LightCont.py`) to the root directory or a subdirectory on the device.
     *   **WifiDetect Specific:** Also upload the `WifiDetect/ssd1306.py` driver file to the root directory on the ESP8266.
+    *   **LivingRoomIOT Specific:** Also upload the `aht.py` driver library file to the same directory as `LivingRoomIOT.py` on the device.
 
     *Example using Thonny:* Open the files (`secrets.py`, `ProjectName.py`, `ssd1306.py` if needed) and use `File > Save copy... > MicroPython device`.*
 
