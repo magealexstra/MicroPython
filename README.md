@@ -324,19 +324,20 @@ MQTT_PORT = 1883  # Default MQTT port (change if needed, e.g., 8883 for TLS)
 ```
 MicroPython-ESP32-Projects/
 ├── BreakSense/
-│   └── BreakSense.py     # Digital input monitoring (e.g., break beam)
+│   └── BreakSense.py     
 ├── LightCont/
-│   └── LightCont.py      # Relay control with MQTT/buttons/light sensor
+│   └── LightCont.py      
 ├── LivingRoomIOT/
-│   └── LivingRoomIOT.py  # Integrated automation hub script
+│   ├── LivingRoomIOT.py  
+│   └── aht.py            # AHT2x sensor driver
 ├── TempSense/
-│   └── TempSense.py      # I2C Temperature/humidity monitoring
+│   └── TempSense.py      
 ├── WifiDetect/
-│   ├── WifiDetect.py     # ESP8266 WiFi scanner with OLED display
+│   ├── WifiDetect.py     
 │   └── ssd1306.py        # OLED display driver library
 ├── .gitignore            # Git ignore configuration (excludes secrets.py)
-├── LICENSE               # MIT License file
-├── README.md             # This documentation file
+├── LICENSE               
+├── README.md             #
 └── secrets_example.py    # Template for creating secrets.py
 ```
 *(Note: Some directories might contain `.gitkeep` files which are placeholders for Git)*
@@ -347,6 +348,10 @@ MicroPython-ESP32-Projects/
 - The `.gitignore` file is configured to prevent accidental commits of `secrets.py`.
 - For production environments, consider more robust methods for managing secrets than a plain text file on the device filesystem.
 - Ensure your Wi-Fi network and MQTT broker are secured appropriately.
+
+## Credits
+
+This project utilizes the aht.py driver, for which we thank Jonathan Fromentin. You can explore his other work at https://github.com/etno712.
 
 ## 📜 License
 
