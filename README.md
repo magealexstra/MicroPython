@@ -148,6 +148,8 @@ Controls multiple relays via MQTT commands or physical buttons/switches, with op
 
 A comprehensive living room automation system integrating temperature/humidity sensing, multi-relay control, physical inputs (buttons/switches), generic open/close sensor monitoring, and optional light-based automation. Designed for ESP32 but adaptable.
 
+*Note: This project is currently in use as my living room monitor.*
+
 **Features:**
 - 🌡️ **AHT2x Sensing:** Reads temperature & humidity via I2C (requires external library).
 - 💧 **Data Smoothing:** Applies Exponential Moving Average (EMA) to sensor readings.
@@ -163,6 +165,8 @@ A comprehensive living room automation system integrating temperature/humidity s
 - ⚙️ **Configuration:** Highly configurable via constants within the script and `secrets.py`.
 - 🐛 **Debugging:** Optional detailed logging.
 - 🔘 **Button Events:** Publishes physical button press events via MQTT.
+- 💡 **Status LED:** Provides visual feedback on device state using an RGB LED (requires `neopixel` library).
+- 🌐 **WebREPL:** Includes WebREPL for remote access (requires `webrepl` library).
 
 **Configuration Options (within `LivingRoomIOT.py`):**
 - `DEBUG`: Enable/disable verbose logging.
@@ -328,8 +332,9 @@ MicroPython-ESP32-Projects/
 ├── LightCont/
 │   └── LightCont.py      
 ├── LivingRoomIOT/
-│   ├── LivingRoomIOT.py  
-│   └── aht.py            # AHT2x sensor driver
+│   ├── LivingRoomIOT.py
+│   ├── aht.py            # AHT2x sensor driver
+│   └── STATUS_LED_GUIDE.md # Guide for the RGB status LED
 ├── TempSense/
 │   └── TempSense.py      
 ├── WifiDetect/

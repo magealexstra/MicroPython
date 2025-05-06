@@ -198,3 +198,7 @@ Data/**
 # Ignore specific project copies
 GuestRoom/
 GuestRoom/**
+
+# Ignore Pymakr
+Pymakr
+Pymakr/**

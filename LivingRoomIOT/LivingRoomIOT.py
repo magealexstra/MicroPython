@@ -29,11 +29,13 @@ import json        # JSON for MQTT payloads (memory efficient)
 from machine import Pin, I2C, ADC, reset  # ESP32 hardware control
 from umqtt.simple import MQTTClient  # Lightweight MQTT client
 import aht
+import webrepl
+import neopixel
 
 
 # Import secrets (Wi-Fi credentials, MQTT broker info)
 try:
-    from secrets import WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT
+    from secrets import WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, STATIC_IP, SUBNET_MASK, GATEWAY, DNS_SERVER
 except ImportError:
     print("Failed to import secrets. Please ensure 'secrets.py' is in the project root directory.")
     raise
@@ -60,11 +62,11 @@ MQTT_TOPIC_DAYLIGHT_EVENT = 'daylight_event' # [CONFIG] Sub-topic for publishing
 # Generic Open/Close Sensor topics are defined in SENSOR_CONFIG below
 
 # I2C Configuration for AHT2x Temperature/Humidity Sensor
-I2C_SCL_PIN = 22    # [CONFIG] GPIO pin for I2C Clock (SCL)
-I2C_SDA_PIN = 21    # [CONFIG] GPIO pin for I2C Data (SDA)
+I2C_SCL_PIN = 13    # [CONFIG] GPIO pin for I2C Clock (SCL)
+I2C_SDA_PIN = 12    # [CONFIG] GPIO pin for I2C Data (SDA)
 I2C_FREQ = 100000 # [CONFIG] I2C communication frequency in Hz
 SENSOR_ADDR = 0x38  # [CONFIG] I2C address for AHT2x sensor (common is 0x38 or 0x3F)
-
+        
 # Sensor Reading & Smoothing Configuration (AHT2x)
 EMA_ALPHA = 0.1           # [CONFIG] Exponential Moving Average smoothing factor (0.0 to 1.0). Lower values = smoother but slower response.
 TEMP_THRESHOLD = 0.3      # [CONFIG] Minimum temperature change (degrees C) to trigger MQTT publish
@@ -115,7 +117,20 @@ SENSOR_CONFIG = {
         "debounce_ms": 300
     },
 }
- 
+
+
+
+# RGB LED Status Indicator
+RGB_LED_PIN = 48
+STATUS_COLOR_WHITE = (255, 255, 255)
+STATUS_COLOR_BLUE = (0, 0, 255)
+STATUS_COLOR_CYAN = (0, 255, 255)
+STATUS_COLOR_PURPLE = (128, 0, 128)
+STATUS_COLOR_GREEN = (0, 255, 0)
+STATUS_COLOR_RED = (255, 0, 0)
+STATUS_COLOR_ORANGE = (255, 165, 0)
+STATUS_COLOR_YELLOW = (255, 255, 0)
+
 # Main loop and connection settings
 LOOP_DELAY = 1                     # Controls CPU usage and responsiveness
 MAX_CONNECTION_RETRIES = 10        # Prevents boot loops, triggers reset after failures
@@ -129,6 +144,8 @@ relays = {}                 # Dictionary to store relay Pin objects, keyed by GP
 buttons = {}                # Dictionary to store button Pin objects, keyed by GPIO pin number. e.g., {4: Pin(4, Pin.IN, Pin.PULL_UP)}
 light_sensor = None         # ADC object when enabled, None otherwise
 aht_sensor = None           # AHT2x sensor object when initialized, None otherwise
+status_led = None           # NeoPixel object for status indicator
+status_led_current_color = None # Global variable to track the current LED color
 
 last_button_states = {}     # {pin_num: state} - 1=released, 0=pressed (pull-up)
 last_button_times = {}      # {pin_num: timestamp} - for debouncing in ticks_ms
@@ -214,6 +231,11 @@ def connect_wifi():
     """
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    # Configure static IP if provided in secrets.py
+    if STATIC_IP and SUBNET_MASK and GATEWAY and DNS_SERVER:
+        wlan.ifconfig((STATIC_IP, SUBNET_MASK, GATEWAY, DNS_SERVER))
+        print(f'Configured static IP: {STATIC_IP}')
+    
     if not wlan.isconnected():
         print('Connecting to Wi-Fi...')
         wlan.connect(WIFI_SSID, WIFI_PASSWORD)
@@ -400,6 +422,7 @@ def publish_relay_state(relay_pin):
         topic = get_relay_state_topic(relay_pin)
         mqtt_client.publish(topic.encode(), state.encode(), retain=True, qos=0)
         debug_print(f"Published relay {relay_pin} state '{state}' to topic '{topic}'")
+        flash_status_led(STATUS_COLOR_YELLOW, 1000)
     except Exception as e:
         debug_print(f"Failed to publish relay state for pin {relay_pin}: {type(e).__name__} - {str(e)}")
         mqtt_client = None # Signal to reconnect
@@ -428,6 +451,7 @@ def publish_sensor_state(sensor_name):
         if topic:
             mqtt_client.publish(topic.encode(), state_str.encode(), retain=True, qos=0)
             debug_print(f"Published {sensor_name} state '{state_str}' to topic '{topic}'")
+            flash_status_led(STATUS_COLOR_YELLOW, 1000)
     except Exception as e:
         debug_print(f"Failed to publish {sensor_name} sensor state: {type(e).__name__} - {str(e)}")
         mqtt_client = None # Signal to reconnect
@@ -449,6 +473,7 @@ def publish_light_sensor_reading():
             topic = get_light_sensor_topic()
             mqtt_client.publish(topic.encode(), f"{light_level}".encode(), retain=False, qos=0)
             debug_print(f"Published light level '{light_level}' to topic '{topic}'")
+            flash_status_led(STATUS_COLOR_YELLOW, 1000)
     except Exception as e:
         debug_print(f"Failed to publish light sensor reading: {type(e).__name__} - {str(e)}")
         mqtt_client = None # Signal to reconnect
@@ -472,6 +497,7 @@ def publish_daylight_event(event_type, utc_timestamp):
         topic = get_daylight_event_topic()
         mqtt_client.publish(topic.encode(), payload.encode(), retain=True, qos=0) # Retain the last event
         debug_print(f"Published daylight event '{payload}' to topic '{topic}'")
+        flash_status_led(STATUS_COLOR_YELLOW, 1000)
     except Exception as e:
         debug_print(f"Failed to publish daylight event: {type(e).__name__} - {str(e)}")
         mqtt_client = None # Signal to reconnect
@@ -495,7 +521,7 @@ def set_relay(pin_num, state):
     if pin_num not in relays:
         debug_print(f"Attempted to set unknown relay pin: {pin_num}")
         return
-
+    
     target_value = 1 if state == 'ON' else 0
     current_value = relays[pin_num].value()
 
@@ -508,6 +534,53 @@ def set_relay(pin_num, state):
             debug_print(f"Failed to set relay state for pin {pin_num}: {type(e).__name__} - {str(e)}")
     else:
         debug_print(f"Relay {pin_num} already in state {state}")
+
+
+#------------------------------------------------------------------------------
+# LED CONTROL FUNCTIONS
+#------------------------------------------------------------------------------
+
+def init_status_led():
+    global status_led
+    try:
+        status_led = neopixel.NeoPixel(Pin(RGB_LED_PIN), 1)
+        print(f"Status LED initialized on GPIO {RGB_LED_PIN}.")
+    except Exception as e:
+        debug_print(f"Failed to initialize status LED on GPIO {RGB_LED_PIN}: {type(e).__name__} - {str(e)}")
+        status_led = None
+
+def set_status_led(color):
+    if status_led:
+        try:
+            status_led[0] = color
+            status_led.write()
+            global status_led_current_color
+            status_led_current_color = color
+        except Exception as e:
+            debug_print(f"Failed to set status LED color: {type(e).__name__} - {str(e)}")
+
+
+def flash_status_led(color, duration_ms):
+    """Flashes the status LED a specific color for a duration and restores the previous color."""
+    global status_led_current_color
+    if status_led and status_led_current_color is not None:
+        try:
+            # Save current color
+            previous_color = status_led_current_color
+
+            # Set flash color
+            status_led[0] = color
+            status_led.write()
+
+            # Wait
+            time.sleep_ms(duration_ms)
+
+            # Restore previous color
+            status_led[0] = previous_color
+            status_led.write()
+
+        except Exception as e:
+            debug_print(f"Failed to flash status LED: {type(e).__name__} - {str(e)}")
 
 
 #------------------------------------------------------------------------------
@@ -533,7 +606,7 @@ def init_relays():
             debug_print(f"Relay initialized on GPIO {pin_num}")
             count += 1
         except Exception as e:
-             print(f"Failed to initialize relay on GPIO {pin_num}: {type(e).__name__} - {str(e)}")
+             debug_print(f"Failed to initialize relay on GPIO {pin_num}: {type(e).__name__} - {str(e)}")
     print(f"Initialized {count}/{len(RELAY_PINS)} relays.")
 
 def init_buttons():
@@ -562,7 +635,7 @@ def init_buttons():
             debug_print(f"Button/Switch ({button_type}) initialized on GPIO {button_pin}, controlling relay {BUTTON_RELAY_MAP[button_pin]}")
             count += 1
         except Exception as e:
-            print(f"Failed to initialize button on GPIO {button_pin}: {type(e).__name__} - {str(e)}")
+            debug_print(f"Failed to initialize button on GPIO {button_pin}: {type(e).__name__} - {str(e)}")
 
     # Verify all pins in BUTTON_PINS were considered (optional check)
     for pin_num in BUTTON_PINS:
@@ -600,7 +673,7 @@ def init_sensor(sensor_name, config):
         print(f"Sensor '{sensor_name}' initialized.")
         return True # Indicate success
     except Exception as e:
-        print(f"Failed to initialize sensor '{sensor_name}' on GPIO {pin_num}: {type(e).__name__} - {str(e)}")
+        debug_print(f"Failed to initialize sensor '{sensor_name}' on GPIO {pin_num}: {type(e).__name__} - {str(e)}")
         # Ensure sensor entry is removed or marked as invalid if init fails partially
         if sensor_name in sensors: del sensors[sensor_name]
         if sensor_name in last_sensor_states: del last_sensor_states[sensor_name]
@@ -644,7 +717,7 @@ def init_light_sensor():
              print("Light sensor automatic control disabled (LIGHT_CONTROLLED_RELAYS is empty).")
 
     except Exception as e:
-        print(f"Failed to initialize analog light sensor on GPIO {LIGHT_SENSOR_PIN}: {type(e).__name__} - {str(e)}")
+        debug_print(f"Failed to initialize analog light sensor on GPIO {LIGHT_SENSOR_PIN}: {type(e).__name__} - {str(e)}")
         light_sensor = None
 
 #------------------------------------------------------------------------------
@@ -700,7 +773,6 @@ def check_buttons():
                 # Get the type and mapped relay for this button
                 button_type = BUTTON_TYPES.get(button_pin, "momentary") # Default to momentary
                 relay_pin = BUTTON_RELAY_MAP.get(button_pin)
-                # --- Add this section to publish button event ---
                 global mqtt_client
                 if mqtt_client: # Check if MQTT client is connected
                     try:
@@ -713,6 +785,7 @@ def check_buttons():
                         topic = get_button_event_topic()
                         mqtt_client.publish(topic.encode(), payload.encode(), retain=False, qos=0) # Don't retain button events
                         debug_print(f"Published button event for pin {button_pin}: {payload}")
+                        flash_status_led(STATUS_COLOR_YELLOW, 1000)
                     except Exception as e:
                         sys.print_exception(e)
                         debug_print(f"Failed to publish button event for pin {button_pin}: {e}")
@@ -795,22 +868,24 @@ def check_aht2x_sensor():
         return # Skip if sensor not initialized or MQTT not connected
 
     try:
-        # Read temperature and humidity from AHT2x sensor
-        temperature = aht_sensor.temperature
-        humidity = aht_sensor.relative_humidity
+        # Trigger measurement and check if successful
+        if aht_sensor._measure():
+            # Read temperature and humidity from AHT2x sensor
+            temperature = aht_sensor.temperature
+            humidity = aht_sensor.humidity
 
-        if temperature is not None and humidity is not None:
-            # Apply Exponential Moving Average (EMA)
-            if ema_temp is None:
-                ema_temp = temperature
-                ema_humidity = humidity
-                debug_print(f"EMA initialized (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
-            else:
-                ema_temp = (EMA_ALPHA * temperature) + ((1 - EMA_ALPHA) * ema_temp)
-                ema_humidity = (EMA_ALPHA * humidity) + ((1 - EMA_ALPHA) * ema_humidity)
-                debug_print(f"EMA updated (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
+            if temperature is not None and humidity is not None:
+                # Apply Exponential Moving Average (EMA)
+                if ema_temp is None:
+                    ema_temp = temperature
+                    ema_humidity = humidity
+                    debug_print(f"EMA initialized (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
+                else:
+                    ema_temp = (EMA_ALPHA * temperature) + ((1 - EMA_ALPHA) * ema_temp)
+                    ema_humidity = (EMA_ALPHA * humidity) + ((1 - EMA_ALPHA) * ema_humidity)
+                    debug_print(f"EMA updated (AHT2x): Temp={ema_temp:.2f}, Hum={ema_humidity:.2f}")
 
-            # Check if smoothed values exceed thresholds for publishing
+                # Check if smoothed values exceed thresholds for publishing
             temp_changed = last_sent_temp is None or abs(ema_temp - last_sent_temp) >= TEMP_THRESHOLD
             humidity_changed = last_sent_humidity is None or abs(ema_humidity - last_sent_humidity) >= HUMIDITY_THRESHOLD
 
@@ -823,6 +898,7 @@ def check_aht2x_sensor():
                         mqtt_client.publish(topic.encode(), f"{ema_temp:.2f}".encode(), retain=False, qos=0)
                         last_sent_temp = ema_temp
                         debug_print(f"Published temperature (AHT2x): {last_sent_temp:.2f} C to {topic}")
+                        flash_status_led(STATUS_COLOR_YELLOW, 1000)
                     except Exception as e:
                         debug_print(f"Failed to publish temperature (AHT2x): {type(e).__name__} - {str(e)}")
                         # Don't update last_sent_temp if publish fails
@@ -835,6 +911,7 @@ def check_aht2x_sensor():
                         mqtt_client.publish(topic.encode(), f"{ema_humidity:.2f}".encode(), retain=False, qos=0)
                         last_sent_humidity = ema_humidity
                         debug_print(f"Published humidity (AHT2x): {last_sent_humidity:.2f} % to {topic}")
+                        flash_status_led(STATUS_COLOR_YELLOW, 1000)
                     except Exception as e:
                         debug_print(f"Failed to publish humidity (AHT2x): {type(e).__name__} - {str(e)}")
                         # Don't update last_sent_humidity if publish fails
@@ -842,9 +919,11 @@ def check_aht2x_sensor():
 
         else:
             debug_print('Invalid AHT2x sensor data received, skipping processing.')
+            set_status_led(STATUS_COLOR_ORANGE) # Indicate sensor error
 
     except Exception as e:
         debug_print(f"Error reading or processing AHT2x data: {type(e).__name__} - {str(e)}")
+        set_status_led(STATUS_COLOR_ORANGE) # Indicate sensor error
         # Consider setting aht_sensor = None here if a permanent error is detected
         # For now, just log and continue
 
@@ -936,6 +1015,7 @@ def main():
     global mqtt_client, device_id
 
     print("Starting Living Room IoT Controller...")
+    set_status_led(STATUS_COLOR_WHITE) # Indicate booting/initializing
 
     # Set device ID early if needed for topics
     if MQTT_USE_DEVICE_ID:
@@ -948,6 +1028,7 @@ def main():
     # Initialize hardware first
     init_relays()
     init_buttons()
+    
     # Initialize generic sensors based on SENSOR_CONFIG
     print("Initializing generic sensors...")
     initialized_sensors = []
@@ -956,6 +1037,7 @@ def main():
              initialized_sensors.append(name)
     print(f"Initialized {len(initialized_sensors)} generic sensors: {initialized_sensors}")
     init_light_sensor()
+    init_status_led()
 
     # Connect to network services
     wlan = connect_wifi()
@@ -984,11 +1066,11 @@ def main():
                 publish_daylight_event(initial_event, initial_utc_epoch)
                 print(f"Published initial daylight state: {initial_event}")
             except Exception as e:
-                print(f"Failed to get time or publish initial daylight state: {type(e).__name__} - {str(e)}")
+                debug_print(f"Failed to get time or publish initial daylight state: {type(e).__name__} - {str(e)}")
         else:
-             print("Could not read initial light level for daylight state.")
+             debug_print("Could not read initial light level for daylight state.")
     elif not time_synced:
-         print("Skipping initial daylight state publish because time is not synchronized.")
+         debug_print("Skipping initial daylight state publish because time is not synchronized.")
 
 
     print("Initialization complete. Entering main loop...")
@@ -1012,12 +1094,12 @@ def main():
             print(f"AHT2x sensor found at address {hex(SENSOR_ADDR)}.")
             # Initialize AHT2x sensor
             global aht_sensor
-            aht_sensor = aht.AHT20(i2c, address=SENSOR_ADDR)
+            aht_sensor = aht.AHT2x(i2c, address=SENSOR_ADDR)
             print("AHT2x sensor initialized.")
     except Exception as e:
-        print(f"Failed to initialize I2C bus or AHT2x sensor: {type(e).__name__} - {str(e)}")
+        debug_print(f"Failed to initialize I2C bus or AHT2x sensor: {type(e).__name__} - {str(e)}")
         # aht_sensor remains None
-
+    webrepl.start(password='zigy5857')
 
     while True:
 
@@ -1027,25 +1109,33 @@ def main():
             if not wlan.isconnected():
                 wifi_retry_count += 1
                 print(f"Wi-Fi disconnected. Attempting reconnect {wifi_retry_count}/{MAX_CONNECTION_RETRIES}...")
+                set_status_led(STATUS_COLOR_BLUE) # Indicate connecting to Wi-Fi
+                status_code = wlan.status()
+                print(f"Wi-Fi status code: {status_code}")
+                time.sleep(5)
                 wlan = connect_wifi() # Attempt reconnection
+                print(f"WLAN status after connect_wifi: {wlan.status()}")
 
-                if not wlan.isconnected():
-                    wifi_backoff_time = min(60, LOOP_DELAY * (2 ** wifi_retry_count)) # Increase max backoff
-                    print(f"Wi-Fi reconnection failed. Waiting {wifi_backoff_time}s...")
-                    time.sleep(wifi_backoff_time)
-                    if wifi_retry_count >= MAX_CONNECTION_RETRIES:
-                        print("Max Wi-Fi retries reached. Restarting device.")
-                        time.sleep(1)
-                        reset()
-                else:
-                    print("Wi-Fi reconnected.")
-                    wifi_retry_count = 0
-                    wifi_backoff_time = LOOP_DELAY
-                    # Reconnect MQTT immediately after Wi-Fi comes back up
-                    if mqtt_client is None:
-                         print("Attempting MQTT reconnect after Wi-Fi restored...")
-                         mqtt_client = connect_mqtt()
-                         mqtt_retry_count = 0 # Reset MQTT counter too
+            if not wlan.isconnected():
+                wifi_backoff_time = min(60, LOOP_DELAY * (2 ** wifi_retry_count)) # Increase max backoff
+                print(f"Wi-Fi reconnection failed. Waiting {wifi_backoff_time}s...")
+                time.sleep(wifi_backoff_time)
+                if wifi_retry_count >= MAX_CONNECTION_RETRIES:
+                    print("Max Wi-Fi retries reached. Restarting device.")
+                    set_status_led(STATUS_COLOR_RED) # Indicate major error
+                    time.sleep(1)
+                    reset()
+
+            # Check if Wi-Fi is connected but MQTT is not
+            if wlan.isconnected() and mqtt_client is None:
+                set_status_led(STATUS_COLOR_CYAN) # Indicate Wi-Fi connected, MQTT disconnected
+
+            # Reconnect MQTT immediately after Wi-Fi comes back up
+            if mqtt_client is None and wlan.isconnected():
+                print("Attempting MQTT reconnect after Wi-Fi restored...")
+                set_status_led(STATUS_COLOR_PURPLE) # Indicate connecting to MQTT
+                mqtt_client = connect_mqtt()
+                mqtt_retry_count = 0 # Reset MQTT counter too
 
 
             # Reconnect MQTT if disconnected (and Wi-Fi is connected)
@@ -1060,6 +1150,7 @@ def main():
                     time.sleep(mqtt_backoff_time)
                     if mqtt_retry_count >= MAX_CONNECTION_RETRIES:
                         print("Max MQTT retries reached. Restarting device.")
+                        set_status_led(STATUS_COLOR_RED) # Indicate major error
                         time.sleep(1)
                         reset()
                 else:
@@ -1069,6 +1160,7 @@ def main():
 
             # --- Sensor Checks (only if connected and time potentially synced) ---
             if wlan.isconnected() and mqtt_client is not None:
+                set_status_led(STATUS_COLOR_GREEN) # Indicate working properly
                 # Attempt NTP time sync periodically if initial sync failed
                 current_epoch = time.time()
                 if not time_synced and (current_epoch % NTP_SYNC_INTERVAL < LOOP_DELAY):
@@ -1080,7 +1172,6 @@ def main():
                         if light_sensor:
                             initial_light_level = read_light_sensor()
                             if initial_light_level is not None:
-                                global was_previously_night
                                 was_previously_night = initial_light_level < LIGHT_THRESHOLD
                                 initial_event = "NIGHT" if was_previously_night else "DAY"
                                 try:
@@ -1088,7 +1179,7 @@ def main():
                                     publish_daylight_event(initial_event, initial_utc_epoch)
                                     print(f"Published initial daylight state: {initial_event}")
                                 except Exception as e:
-                                    print(f"Failed to publish initial daylight state after NTP sync: {type(e).__name__} - {str(e)}")
+                                    debug_print(f"Failed to publish initial daylight state after NTP sync: {type(e).__name__} - {str(e)}")
 
                 check_aht2x_sensor()
                 # Only check light sensor transitions if time has been synced at least once
@@ -1112,12 +1203,13 @@ def main():
             time.sleep(LOOP_DELAY)
 
         except KeyboardInterrupt:
-             print("Ctrl+C detected. Exiting main loop.")
-             break
+            print("Ctrl+C detected. Exiting main loop.")
+            break
         except Exception as e:
-             print(f"An unexpected error occurred in the main loop: {type(e).__name__} - {str(e)}. Attempting to continue...")
-             # Consider adding a short delay or specific error handling here
-             time.sleep(5) # Wait a bit before potentially retrying
+            debug_print(f"An unexpected error occurred in the main loop: {type(e).__name__} - {str(e)}. Attempting to continue...")
+            set_status_led(STATUS_COLOR_RED) # Indicate major error
+            # Consider adding a short delay or specific error handling here
+        time.sleep(5) # Wait a bit before potentially retrying
 
 if __name__ == '__main__':
     try:
@@ -1132,5 +1224,7 @@ if __name__ == '__main__':
                  mqtt_client.disconnect()
                  print("MQTT client disconnected cleanly.")
              except Exception as e:
-                 print(f"Error during MQTT cleanup: {type(e).__name__} - {str(e)}")
+                 debug_print(f"Error during MQTT cleanup: {type(e).__name__} - {str(e)}")
         print("Program terminated.")
+
+
