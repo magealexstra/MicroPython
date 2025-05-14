@@ -61,41 +61,48 @@ Monitors a digital input (like a break beam sensor or switch) and reports state 
 
 ### TempSense
 
-Reads temperature and humidity from an I2C sensor, smooths the data, and publishes it via MQTT when significant changes occur.
+Monitors temperature and humidity from an AHT2x I2C sensor and the state of configurable break sensors, publishing data via MQTT based on thresholds, periodically, or on state change.
 
 **Features:**
-- 📶 **Connectivity:** Connects to Wi-Fi and MQTT broker.
-- 🌡️ **I2C Sensing:** Reads Temperature & Humidity (example code for SHT31 provided).
-- 💧 **Data Smoothing:** Applies Exponential Moving Average (EMA) to readings.
-- 📉 **Threshold Publishing:** Only publishes data (JSON format) when changes exceed configured thresholds, reducing MQTT traffic.
+- 📶 **Connectivity:** Connects to Wi-Fi and MQTT broker with authentication.
+- 🕒 **Time Sync:** Synchronizes internal clock using NTP after Wi-Fi connection.
+- 🌡️💧 **AHT2x Sensing:** Reads Temperature & Humidity from an AHT2x I2C sensor (requires `aht.py`).
+- 💧 **Data Smoothing:** Applies Exponential Moving Average (EMA) to temperature and humidity readings.
+- 📉 **Threshold & Periodic Publishing:** Publishes temperature/humidity data (JSON format) when changes exceed configured thresholds or periodically (e.g., every 10 minutes), reducing MQTT traffic.
+- 🚪 **Configurable Break Sensors:** Monitors the state of multiple digital input pins configured as break sensors (e.g., reed switches) with debouncing.
+- 📢 **MQTT Publishing:** Publishes temperature/humidity data and break sensor states to specific topics. Break sensor topics include the pin number.
 - 🚨 **LWT Status:** Publishes `ONLINE`/`OFFLINE` status using MQTT Last Will and Testament.
 - 🆔 **Unique Client ID:** Uses part of the device MAC address for a unique MQTT client ID.
-- 🔄 **Auto-Reconnect:** Attempts to reconnect to Wi-Fi and MQTT if connections drop.
-- ⚙️ **Configuration:** Configure I2C pins, sensor address, MQTT topic, smoothing factor, thresholds, and loop delay.
+- 🔄 **Robust Reconnection & Re-initialization:** Attempts to reconnect to Wi-Fi and MQTT if connections drop. Includes logic to re-initialize the sensor and I2C bus after consecutive read failures.
+- ⚙️ **Configuration:** Configure I2C pins, sensor address, MQTT broker/port/topic, smoothing factor, thresholds, periodic publish interval, break sensor pins, and debounce time.
 - 🐛 **Debugging:** Optional debug messages via `DEBUG` flag.
 
 **Configuration Options (within `TempSense.py`):**
-- `MQTT_TOPIC`: Base topic for sensor data and status messages.
 - `DEBUG`: Enable/disable verbose logging.
 - `LOOP_DELAY_S`: Main loop delay (sensor read interval).
 - `EMA_ALPHA`: Smoothing factor (0.0-1.0).
-- `TEMP_THRESHOLD`, `HUMIDITY_THRESHOLD`: Minimum change to trigger publish.
+- `PERIODIC_PUBLISH_INTERVAL_S`: Interval in seconds for periodic temperature/humidity publishing.
+- `TEMP_THRESHOLD`, `HUMIDITY_THRESHOLD`: Minimum change to trigger temperature/humidity publish.
 - `I2C_SCL_PIN`, `I2C_SDA_PIN`, `I2C_FREQ`: I2C bus settings.
-- `SENSOR_I2C_ADDR`: I2C address of your sensor.
+- `SENSOR_I2C_ADDR`: I2C address of the AHT2x sensor.
+- `BREAK_SENSOR_PINS`: List of GPIO pins connected to break sensors.
+- `BREAK_SENSOR_DEBOUNCE_MS`: Debounce duration in milliseconds for break sensors.
 
-**MQTT Topics:**
-- `{MQTT_TOPIC}`: Publishes JSON `{"temperature": T, "humidity": H}` for sensor data, and `ONLINE`/`OFFLINE` for device status (LWT).
+**MQTT Topics (assuming base topic is configured):**
+- `{MQTT_TOPIC}`: Publishes JSON `{"temperature": T, "humidity": H}` for temperature/humidity data, and `ONLINE`/`OFFLINE` for device status (LWT).
+- `{MQTT_TOPIC}/break_sensors/{PIN_NUMBER}`: Publishes `OPEN` or `CLOSED` for break sensor state changes, where `{PIN_NUMBER}` is the GPIO pin number.
 
 **How It Works:**
-1. Initializes the I2C bus and checks for the sensor.
-2. Connects to Wi-Fi and the MQTT broker (setting LWT).
-3. Enters main loop:
-    a. Checks Wi-Fi/MQTT connections and attempts reconnection if needed.
-    b. Reads temperature and humidity from the I2C sensor.
-    c. Applies EMA smoothing to the readings.
-    d. Compares smoothed values to the last published values.
-    e. If the change exceeds `TEMP_THRESHOLD` or `HUMIDITY_THRESHOLD`, publishes the new data as a JSON payload to the MQTT topic.
-    f. Sleeps for `LOOP_DELAY_S`.
+1. Initializes the I2C bus and the AHT2x sensor.
+2. Initializes configured break sensor pins.
+3. Connects to Wi-Fi and synchronizes time via NTP.
+4. Connects to the MQTT broker with authentication (setting LWT, publishing initial ONLINE status and break sensor states).
+5. Enters main loop:
+    a. Checks Wi-Fi/MQTT connections and attempts reconnection/re-initialization if needed.
+    b. Reads temperature and humidity from the AHT2x sensor, applies EMA smoothing.
+    c. Checks if smoothed temperature/humidity changes exceed thresholds or if the periodic interval has passed; if so, publishes the data.
+    d. Checks configured break sensor pins (debounced); if a state change is detected, publishes the new state.
+    e. Sleeps for `LOOP_DELAY_S`.
 
 ### LightCont
 
@@ -336,7 +343,8 @@ MicroPython-ESP32-Projects/
 │   ├── aht.py            # AHT2x sensor driver
 │   └── STATUS_LED_GUIDE.md # Guide for the RGB status LED
 ├── TempSense/
-│   └── TempSense.py      
+│   ├── TempSense.py
+│   └── aht.py            # AHT2x sensor driver
 ├── WifiDetect/
 │   ├── WifiDetect.py     
 │   └── ssd1306.py        # OLED display driver library

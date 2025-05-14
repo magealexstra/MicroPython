@@ -26,23 +26,23 @@ import network     # Handles WiFi connectivity
 import time        # Time functions (delays, ticks)
 import ubinascii   # Binary/ASCII conversions (for MAC address)
 import sys         # System-specific parameters and functions (exception printing)
+import json        # JSON for MQTT payloads
 from machine import Pin, I2C # Hardware control for GPIO pins and I2C communication
 from umqtt.simple import MQTTClient # MQTT protocol client
+import aht         # Driver for AHT2x sensor
 
 # Import local secrets
 try:
     # Network & MQTT credentials
-    from secrets import WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT
+    from secrets import WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, MQTT_TOPIC
 except ImportError:
     print("CRITICAL ERROR: Failed to import secrets.")
-    print("Please ensure 'secrets.py' exists in the root directory with WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, and MQTT_PORT defined.")
+    print("Please ensure 'secrets.py' exists in the root directory with WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD, and MQTT_TOPIC defined.")
     raise # Re-raise the exception
 
 #------------------------------------------------------------------------------
 # CONFIGURATION SETTINGS - ADJUST THESE FOR YOUR SETUP
 #------------------------------------------------------------------------------
-# MQTT Settings
-MQTT_TOPIC = 'esp32/tempsense'  # [CONFIG] Base MQTT topic for publishing sensor data and status.
 
 # Debugging
 DEBUG = False                   # [CONFIG] Set to True for detailed log messages.
@@ -50,25 +50,44 @@ DEBUG = False                   # [CONFIG] Set to True for detailed log messages
 # Timing and Smoothing
 LOOP_DELAY_S = 5                # [CONFIG] Delay in seconds between sensor readings and checks.
 EMA_ALPHA = 0.1                 # [CONFIG] Smoothing factor (0.0 to 1.0). Lower = smoother, more delayed response. Higher = less smooth, faster response.
+PERIODIC_PUBLISH_INTERVAL_S = 600 # [CONFIG] Interval in seconds for periodic publishing (e.g., 600 for 10 minutes).
 
 # Publishing Thresholds
 TEMP_THRESHOLD = 0.3            # [CONFIG] Minimum change in smoothed temperature (degrees C) to trigger MQTT publish.
 HUMIDITY_THRESHOLD = 1.0        # [CONFIG] Minimum change in smoothed humidity (percent RH) to trigger MQTT publish.
 
-# I2C Sensor Configuration
+# I2C Sensor Configuration (for AHT2x)
 I2C_SCL_PIN = 22                # [CONFIG] GPIO pin number for I2C Serial Clock (SCL).
 I2C_SDA_PIN = 21                # [CONFIG] GPIO pin number for I2C Serial Data (SDA).
 I2C_FREQ = 100000               # [CONFIG] I2C bus frequency in Hz (e.g., 100000 for 100kHz, 400000 for 400kHz).
-SENSOR_I2C_ADDR = 0x44          # [CONFIG] I2C address of the temperature/humidity sensor (e.g., 0x44 for SHT31). Verify with datasheet or I2C scan.
+SENSOR_I2C_ADDR = 0x38          # [CONFIG] I2C address of the AHT2x temperature/humidity sensor (0x38).
+
+# Break Sensor Configuration
+BREAK_SENSOR_PINS = []          # [CONFIG] List of GPIO pins connected to break sensors (e.g., [19, 23]). Configure this list.
+BREAK_SENSOR_DEBOUNCE_MS = 300  # [CONFIG] Debounce time in milliseconds for break sensors.
 
 #------------------------------------------------------------------------------
 # GLOBAL VARIABLES - INTERNAL STATE TRACKING (DO NOT MODIFY)
 #------------------------------------------------------------------------------
 # State variables like EMA values and last sent values are managed within main() scope.
+break_sensor_states = {} # {pin_num: state} - 1=open, 0=closed (assuming pull-up)
+last_break_sensor_times = {} # {pin_num: timestamp} - for debouncing in ticks_ms
+aht_sensor = None # AHT2x sensor object when initialized
 
 #------------------------------------------------------------------------------
 # UTILITY FUNCTIONS
 #------------------------------------------------------------------------------
+def sync_time():
+    """Synchronizes the device's internal clock using NTP."""
+    print("Attempting to sync time with NTP...")
+    try:
+        ntptime.settime() # Blocks until time is set or error occurs
+        print(f"Time synchronized successfully (UTC): {time.localtime()}")
+        return True
+    except Exception as e:
+        debug_print(f"Failed to sync time with NTP: {type(e).__name__} - {str(e)}")
+        return False
+
 def debug_print(*args, **kwargs):
     """Prints messages only if the global DEBUG flag is True.
 
@@ -127,6 +146,23 @@ def connect_wifi():
         wlan.active(False) # Deactivate if connection failed
         return None
 
+#------------------------------------------------------------------------------
+# MQTT FUNCTIONS
+#------------------------------------------------------------------------------
+def publish_mqtt_message(topic, payload, retain=False):
+    """Publishes a message to the MQTT broker."""
+    global mqtt_client
+    if mqtt_client:
+        try:
+            mqtt_client.publish(topic.encode(), str(payload).encode(), retain=retain, qos=0)
+            debug_print(f"Published to topic '{topic}': {payload}")
+        except Exception as e:
+            debug_print(f"ERROR: Failed to publish MQTT message to topic '{topic}'.")
+            sys.print_exception(e)
+            mqtt_client = None # Assume MQTT connection is broken
+    else:
+        debug_print(f"MQTT client not connected, skipping publish to topic '{topic}'.")
+
 def connect_mqtt():
     """Connects to the MQTT broker specified in secrets.py.
 
@@ -135,35 +171,53 @@ def connect_mqtt():
     Returns:
         umqtt.simple.MQTTClient: The connected MQTT client object, or None if connection fails.
     """
+    global mqtt_client # Use global mqtt_client variable
     try:
         client_id = get_unique_client_id()
-        client = MQTTClient(client_id, MQTT_BROKER, port=MQTT_PORT)
+        # Include username and password for authentication
+        client = MQTTClient(client_id, MQTT_BROKER, port=MQTT_PORT, user=MQTT_USERNAME, password=MQTT_PASSWORD)
         # Set Last Will and Testament (LWT)
         client.set_last_will(MQTT_TOPIC.encode(), b'OFFLINE', retain=True, qos=0)
         print('Connecting to MQTT broker at {}:{}...'.format(MQTT_BROKER, MQTT_PORT))
         client.connect()
         debug_print('Successfully connected to MQTT broker.')
         # Publish ONLINE status message (retained)
-        client.publish(MQTT_TOPIC.encode(), b'ONLINE', retain=True, qos=0)
+        publish_mqtt_message(MQTT_TOPIC, 'ONLINE', retain=True) # Use unified publish function
         debug_print("Published 'ONLINE' status to topic:", MQTT_TOPIC)
+        mqtt_client = client # Store the connected client
+
+        # Publish initial state of break sensors
+        for pin_num in BREAK_SENSOR_PINS:
+            try:
+                # Get the current state from the initialized break_sensor_states dictionary
+                current_state = break_sensor_states.get(pin_num)
+                if current_state is not None: # Ensure the pin was successfully initialized
+                    state_str = 'OPEN' if current_state else 'CLOSED'
+                    topic = f'{MQTT_TOPIC}/break_sensors/{pin_num}'
+                    publish_mqtt_message(topic, state_str, retain=True)
+                else:
+                    debug_print(f"Warning: Break sensor on pin {pin_num} not found in break_sensor_states. Skipping initial publish.")
+
+            except Exception as e:
+                debug_print(f"Error publishing initial state for break sensor on pin {pin_num}: {e}")
+
         return client
     except Exception as e:
-        print('ERROR: Failed to connect to MQTT broker.')
+        debug_print('ERROR: Failed to connect to MQTT broker.')
         sys.print_exception(e)
+        mqtt_client = None # Ensure global client is None on failure
         return None
 
 #------------------------------------------------------------------------------
 # SENSOR FUNCTIONS - *** MODIFY FOR YOUR SPECIFIC SENSOR ***
 #------------------------------------------------------------------------------
 def init_sensor():
-    """Initializes the I2C bus and checks for the specified sensor.
-
-    *** This function contains placeholder logic for an SHT31 sensor. ***
-    *** You MUST adapt it for the actual sensor you are using. ***
+    """Initializes the I2C bus and the AHT2x sensor.
 
     Returns:
-        tuple: (I2C object, sensor_address) if successful, otherwise None.
+        aht.AHT2x: The initialized AHT2x sensor object if successful, otherwise None.
     """
+    global aht_sensor
     try:
         print(f"Initializing I2C on SCL={I2C_SCL_PIN}, SDA={I2C_SDA_PIN}, Freq={I2C_FREQ}Hz")
         i2c = I2C(0, scl=Pin(I2C_SCL_PIN), sda=Pin(I2C_SDA_PIN), freq=I2C_FREQ)
@@ -173,60 +227,94 @@ def init_sensor():
         debug_print('I2C devices found:', [hex(d) for d in devices])
 
         if SENSOR_I2C_ADDR not in devices:
-            print(f"ERROR: Sensor not found at address {hex(SENSOR_I2C_ADDR)}.")
+            print(f"ERROR: AHT2x sensor not found at address {hex(SENSOR_I2C_ADDR)}.")
             print("Please check wiring and SENSOR_I2C_ADDR configuration.")
             return None
 
-        print(f"Sensor found at address {hex(SENSOR_I2C_ADDR)}.")
-        # Add any sensor-specific initialization commands here if needed
-        # e.g., i2c.writeto(SENSOR_I2C_ADDR, b'\xsome_init_command')
-        return i2c, SENSOR_I2C_ADDR
+        print(f"AHT2x sensor found at address {hex(SENSOR_I2C_ADDR)}.")
+        aht_sensor = aht.AHT2x(i2c, address=SENSOR_I2C_ADDR)
+        print("AHT2x sensor initialized.")
+        return aht_sensor
 
     except Exception as e:
-        print("ERROR: Failed to initialize I2C sensor.")
+        debug_print("ERROR: Failed to initialize AHT2x sensor.")
         sys.print_exception(e)
         return None
 
-def read_sensor(i2c, addr):
-    """Reads temperature (Celsius) and humidity (%) from the I2C sensor.
-
-    *** This function contains placeholder logic for an SHT31 sensor. ***
-    *** You MUST adapt it for the actual sensor and communication protocol. ***
+def read_sensor(sensor):
+    """Reads temperature (Celsius) and humidity (%) from the AHT2x sensor.
 
     Args:
-        i2c (I2C): The initialized I2C object.
-        addr (int): The I2C address of the sensor.
+        sensor (aht.AHT2x): The initialized AHT2x sensor object.
 
     Returns:
         tuple: (temperature_celsius, humidity_percent) if successful, otherwise (None, None).
     """
+    if sensor is None:
+        debug_print("AHT2x sensor not initialized.")
+        return None, None
+
     try:
-        # --- SHT31 Example ---
-        # Send measurement command (High repeatability)
-        i2c.writeto(addr, b'\x24\x00')
-        # Wait for measurement to complete (refer to sensor datasheet)
-        time.sleep(0.02) # SHT31 typical measurement time ~15ms
-        # Read 6 bytes: Temp MSB, Temp LSB, Temp CRC, Hum MSB, Hum LSB, Hum CRC
-        data = i2c.readfrom(addr, 6)
-        # --- End SHT31 Example ---
+        # The AHT2x driver handles the measurement trigger and reading
+        temperature = sensor.temperature
+        humidity = sensor.humidity
 
-        # --- Data Processing (SHT31 Example) ---
-        # Combine bytes and perform calculations according to datasheet
-        temp_raw = data[0] << 8 | data[1]
-        humidity_raw = data[3] << 8 | data[4]
-        # Formula from SHT31 datasheet
-        temperature = -45 + (175 * (temp_raw / 65535.0))
-        humidity = 100 * (humidity_raw / 65535.0)
-        # --- End Data Processing ---
-
-        debug_print(f"Raw Sensor: Temp={temperature:.2f}C, Humidity={humidity:.1f}%")
-        return temperature, humidity
+        if temperature is not None and humidity is not None:
+             debug_print(f"Raw Sensor: Temp={temperature:.2f}C, Humidity={humidity:.1f}%")
+             return temperature, humidity
+        else:
+             debug_print("AHT2x sensor returned None for temperature or humidity.")
+             return None, None
 
     except Exception as e:
-        print("ERROR: Failed to read sensor data.")
-        # Avoid printing stack trace every time for common read errors
-        debug_print("Underlying exception:", e) # Show details only in debug mode
+        print("ERROR: Failed to read AHT2x sensor data.")
+        debug_print("Underlying exception:", e)
         return None, None
+
+#------------------------------------------------------------------------------
+# BREAK SENSOR FUNCTIONS
+#------------------------------------------------------------------------------
+def init_break_sensors():
+    """Initializes the configured break sensor pins."""
+    global break_sensor_states, last_break_sensor_times
+    print("Initializing break sensors...")
+    for pin_num in BREAK_SENSOR_PINS:
+        try:
+            sensor_pin = Pin(pin_num, Pin.IN, Pin.PULL_UP)
+            break_sensor_states[pin_num] = sensor_pin.value() # Initial state
+            last_break_sensor_times[pin_num] = time.ticks_ms()
+            debug_print(f"Initialized break sensor on pin {pin_num}. Initial state: {'OPEN' if break_sensor_states[pin_num] else 'CLOSED'}")
+        except Exception as e:
+            print(f"ERROR: Failed to initialize break sensor on pin {pin_num}.")
+            sys.print_exception(e)
+
+def check_break_sensors():
+    """Checks the state of break sensors, debounces, and publishes changes."""
+    global break_sensor_states, last_break_sensor_times, mqtt_client
+    current_time = time.ticks_ms()
+
+    for pin_num in BREAK_SENSOR_PINS:
+        try:
+            sensor_pin = Pin(pin_num) # Get the initialized pin object
+            current_state = sensor_pin.value()
+
+            # Debounce check
+            if current_state != break_sensor_states.get(pin_num) and time.ticks_diff(current_time, last_break_sensor_times.get(pin_num, 0)) > BREAK_SENSOR_DEBOUNCE_MS:
+                break_sensor_states[pin_num] = current_state
+                last_break_sensor_times[pin_num] = current_time
+                state_str = 'OPEN' if current_state else 'CLOSED'
+                debug_print(f"Break sensor on pin {pin_num} changed state to {state_str}")
+
+                # Publish state change via MQTT
+                if mqtt_client:
+                    topic = f'{MQTT_TOPIC}/break_sensors/{pin_num}'
+                    publish_mqtt_message(topic, state_str, retain=True)
+                else:
+                    debug_print(f"MQTT client not connected, skipping publish for break sensor {pin_num}.")
+
+        except Exception as e:
+            debug_print(f"Error checking break sensor on pin {pin_num}: {e}")
+
 
 #------------------------------------------------------------------------------
 # MAIN FUNCTION
@@ -243,6 +331,8 @@ def main():
         print("CRITICAL: Wi-Fi connection failed on startup. Cannot proceed.")
         return # Exit if initial Wi-Fi fails
 
+    sync_time() # Synchronize time after initial Wi-Fi connection
+
     client = connect_mqtt()
     # Allow proceeding without initial MQTT connection, will retry in loop
 
@@ -250,7 +340,10 @@ def main():
     if sensor_init_result is None:
         print("CRITICAL: Sensor initialization failed. Cannot proceed.")
         return # Exit if sensor fails
-    i2c, sensor_addr = sensor_init_result
+    # The init_sensor function now returns the aht_sensor object directly
+
+    # Initialize break sensors
+    init_break_sensors()
 
     # Initialize state variables
     ema_temp = None
@@ -258,10 +351,13 @@ def main():
     last_sent_temp = None
     last_sent_humidity = None
     last_successful_read_time = time.time()
+    last_periodic_publish_time = 0 # Track time of last periodic publish
 
     print("Starting main loop...")
     while True:
         try:
+            current_time = time.time() # Get current time at the start of the loop
+
             # --- Connection Management ---
             if not wlan.isconnected():
                 print('Wi-Fi disconnected. Attempting to reconnect...')
@@ -272,6 +368,7 @@ def main():
                     continue # Skip sensor reading if no WiFi
                 else:
                     print("Wi-Fi reconnected.")
+                    sync_time() # Synchronize time after Wi-Fi reconnect
                     client = None # Force MQTT reconnect attempt
 
             if client is None and wlan and wlan.isconnected():
@@ -282,23 +379,20 @@ def main():
                     # Optionally re-publish last known state after reconnecting
                     if last_sent_temp is not None and last_sent_humidity is not None:
                          payload = '{{"temperature": {:.2f}, "humidity": {:.2f}}}'.format(last_sent_temp, last_sent_humidity)
-                         try:
-                             client.publish(MQTT_TOPIC.encode(), payload.encode(), retain=True) # Retain last good state
-                             debug_print('Re-published last state:', payload)
-                         except Exception as e:
-                             print("ERROR: Failed to re-publish state after MQTT reconnect.")
-                             sys.print_exception(e)
-                             client = None # Mark for reconnect again
+                         publish_mqtt_message(MQTT_TOPIC, payload, retain=True) # Use unified publish function
                 else:
                     print("MQTT reconnect failed. Will retry later.")
                     time.sleep(5) # Wait before next cycle if MQTT fails
 
 
             # --- Sensor Reading ---
-            temperature, humidity = read_sensor(i2c, sensor_addr)
+            # Pass the aht_sensor object instead of i2c and addr
+            temperature, humidity = read_sensor(aht_sensor)
 
             if temperature is not None and humidity is not None:
-                last_successful_read_time = time.time() # Track successful reads
+                last_successful_read_time = current_time # Track successful reads
+                failed_read_count = 0 # Reset failure count on successful read
+                failure_start_time = 0 # Reset failure timer
 
                 # --- EMA Smoothing ---
                 # Initialize EMA on the first valid reading
@@ -319,41 +413,56 @@ def main():
                 temp_change = abs(ema_temp - (last_sent_temp if last_sent_temp is not None else ema_temp))
                 humidity_change = abs(ema_humidity - (last_sent_humidity if last_sent_humidity is not None else ema_humidity))
 
-                # Publish if either threshold is met OR if it's the very first valid reading
+                # Check if periodic publish interval has passed
+                should_periodic_publish = (current_time - last_periodic_publish_time) >= PERIODIC_PUBLISH_INTERVAL_S
+
+                # Publish if either threshold is met OR if it's the very first valid reading OR if periodic interval passed
                 should_publish = (
                     (last_sent_temp is None) or # Publish first reading
                     (temp_change >= TEMP_THRESHOLD) or
-                    (humidity_change >= HUMIDITY_THRESHOLD)
+                    (humidity_change >= HUMIDITY_THRESHOLD) or
+                    should_periodic_publish
                 )
 
                 if should_publish:
                     payload = '{{"temperature": {:.2f}, "humidity": {:.2f}}}'.format(ema_temp, ema_humidity)
-                    debug_print(f"Change detected (T:{temp_change:.2f}, H:{humidity_change:.1f}). Publishing: {payload}")
+                    debug_print(f"Change detected (T:{temp_change:.2f}, H:{humidity_change:.1f}) or periodic publish. Publishing: {payload}")
 
-                    if client:
-                        try:
-                            client.publish(MQTT_TOPIC.encode(), payload.encode(), retain=True) # Retain last published state
-                            # Update last sent values ONLY on successful publish
-                            last_sent_temp = ema_temp
-                            last_sent_humidity = ema_humidity
-                        except Exception as e:
-                            print("ERROR: Failed to publish MQTT message.")
-                            sys.print_exception(e)
-                            client = None # Assume MQTT connection is broken
-                    else:
-                        debug_print('MQTT client not connected, skipping publish.')
+                    # Use unified publish function
+                    publish_mqtt_message(MQTT_TOPIC, payload, retain=True)
+
+                    # Update last sent values and periodic publish time ONLY on successful publish
+                    last_sent_temp = ema_temp
+                    last_sent_humidity = ema_humidity
+                    last_periodic_publish_time = current_time # Update periodic publish time
+
                 else:
                     debug_print(f"Change below threshold (T:{temp_change:.2f}, H:{humidity_change:.1f}). Skipping publish.")
 
             else:
                 # Handle sensor read failure
                 print("WARNING: Failed to read sensor data.")
-                # Optional: Implement logic if sensor fails repeatedly (e.g., reset I2C, notify via MQTT)
-                if time.time() - last_successful_read_time > 60: # Example: If no read for 60s
-                    print("ERROR: Sensor has not responded for 60 seconds. Check hardware.")
-                    # Could try re-initializing I2C or sensor here
-                    # sensor_init_result = init_sensor() ... etc.
+                failed_read_count += 1
+                if failure_start_time == 0: # Start the failure timer on the first failure
+                    failure_start_time = current_time
 
+                # Attempt sensor re-initialization after a certain number of failures or a timeout
+                # Configure thresholds as needed (e.g., 10 consecutive failures or 300 seconds of failure)
+                if failed_read_count >= 10 or (current_time - failure_start_time) >= 300:
+                    print("Attempting to re-initialize sensor...")
+                    sensor_init_result = init_sensor()
+                    if sensor_init_result is not None:
+                        print("Sensor re-initialization successful.")
+                        aht_sensor = sensor_init_result # Update the global sensor object
+                        # Reset failure tracking on successful re-initialization
+                        failed_read_count = 0
+                        failure_start_time = 0
+                    else:
+                        print("Sensor re-initialization failed.")
+
+
+            # --- Check Break Sensors ---
+            check_break_sensors()
 
             # --- Loop Delay ---
             time.sleep(LOOP_DELAY_S)
@@ -362,20 +471,21 @@ def main():
             print("Interrupted by user.")
             break
         except Exception as e:
-            print("An unexpected error occurred in the main loop:")
+            debug_print("An unexpected error occurred in the main loop:")
             sys.print_exception(e)
-            print("Restarting loop after 5 seconds...")
+            debug_print("Restarting loop after 5 seconds...")
             time.sleep(5)
 
     # --- Cleanup ---
     print("--- TempSense Stopping ---")
     if client:
         try:
-            client.publish(MQTT_TOPIC.encode(), b'OFFLINE', retain=True, qos=0)
+            # Use unified publish function for OFFLINE status
+            publish_mqtt_message(MQTT_TOPIC, 'OFFLINE', retain=True)
             client.disconnect()
             print("Disconnected from MQTT.")
         except Exception as e:
-            print("Error during MQTT disconnect:", e)
+            debug_print("Error during MQTT disconnect:", e)
     if wlan and wlan.isconnected():
         wlan.disconnect()
         wlan.active(False)
