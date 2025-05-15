@@ -202,3 +202,7 @@ GuestRoom/**
 # Ignore Pymakr
 Pymakr
 Pymakr/**
+
+# Ignore BreakSense
+BreakSense/
+BreakSense/**

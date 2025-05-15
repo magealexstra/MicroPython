@@ -79,15 +79,15 @@ LIGHT_CHECK_INTERVAL = 10   # [CONFIG] Seconds between light sensor checks for a
 LIGHT_CONTROLLED_RELAYS = []# [CONFIG] List of relay pins (e.g., [5, 18]) to be controlled by the light sensor. Empty = no auto control.
 
 # GPIO Pin Configuration
-RELAY_PINS = [15, 16, 17]  # [CONFIG] List of GPIO pins connected to relays. MUST match relays controlled by buttons/light sensor.
-BUTTON_PINS = [4, 5, 6] # [CONFIG] List of GPIO pins connected to physical buttons/switches. MUST match keys in BUTTON_RELAY_MAP and BUTTON_TYPES.
+RELAY_PINS = [20]  # [CONFIG] List of GPIO pins connected to relays. MUST match relays controlled by buttons/light sensor.
+BUTTON_PINS = [4] # [CONFIG] List of GPIO pins connected to physical buttons/switches. MUST match keys in BUTTON_RELAY_MAP and BUTTON_TYPES.
 
 # Button/Switch Configuration
 # [CONFIG] Defines which button/switch controls which relay. Format: {button_pin: relay_pin}
 BUTTON_RELAY_MAP = {
-    4: 15,    # Button on pin 4 controls relay on pin 15
-    5: 16,  # Button on pin 5 controls relay on pin 16
-    6: 17,  # Button on pin 6 controls relay on pin 17
+    4: 20,    # Button on pin 4 controls relay on pin 15
+   # 5: 16,  # Button on pin 5 controls relay on pin 16
+   # 6: 17,  # Button on pin 6 controls relay on pin 17
 }
 BUTTON_TYPES = {
     4: "momentary",  # Pin 4 is a push button (toggles on press)

@@ -10,7 +10,6 @@ A collection of MicroPython projects designed for ESP32 microcontrollers (and ES
 ## 📋 Table of Contents
 
 - [🔧 Projects](#-projects)
-  - [BreakSense](#breaksense)
   - [TempSense](#tempsense)
   - [LightCont](#lightcont)
   - [LivingRoomIOT](#livingroomiot)
@@ -24,40 +23,6 @@ A collection of MicroPython projects designed for ESP32 microcontrollers (and ES
 
 ## 🔧 Projects
 
-### BreakSense
-
-Monitors a digital input (like a break beam sensor or switch) and reports state changes via MQTT.
-
-**Features:**
-- 📶 **Connectivity:** Connects to Wi-Fi and MQTT broker.
-- 🚦 **Digital Input Monitoring:** Reads the state of a configured GPIO pin.
-- ⏳ **Debouncing:** Software debouncing prevents false triggers from noisy signals.
-- 📢 **MQTT Publishing:** Publishes state changes (`HIGH`/`LOW`) to a specific topic.
-- 🚨 **LWT Status:** Publishes `ONLINE`/`OFFLINE` status using MQTT Last Will and Testament.
-- 🆔 **Unique Client ID:** Uses part of the device MAC address for a unique MQTT client ID.
-- 🔄 **Auto-Reconnect:** Attempts to reconnect to Wi-Fi and MQTT if connections drop.
-- ⚙️ **Configuration:** Easily configure GPIO pin, MQTT topic, debounce time, and loop delay.
-- 🐛 **Debugging:** Optional debug messages via `DEBUG` flag.
-
-**Configuration Options (within `BreakSense.py`):**
-- `MQTT_TOPIC`: Base topic for state and status messages.
-- `GPIO_PIN`: Pin connected to the digital sensor/switch.
-- `DEBUG`: Enable/disable verbose logging.
-- `DEBOUNCE_TIME_MS`: Debounce duration in milliseconds.
-- `LOOP_DELAY_S`: Main loop delay in seconds.
-
-**MQTT Topics:**
-- `{MQTT_TOPIC}`: Publishes `HIGH` or `LOW` for sensor state, and `ONLINE`/`OFFLINE` for device status (LWT).
-
-**How It Works:**
-1. Initializes the configured GPIO pin as an input with a pull-up resistor.
-2. Connects to Wi-Fi and the MQTT broker (setting LWT).
-3. Enters main loop:
-    a. Checks Wi-Fi/MQTT connections and attempts reconnection if needed.
-    b. Reads the digital input pin state.
-    c. Applies debouncing logic to filter out noise.
-    d. If a stable state change is detected, publishes `HIGH` or `LOW` to the MQTT topic.
-    e. Sleeps for `LOOP_DELAY_S`.
 
 ### TempSense
 
@@ -334,8 +299,6 @@ MQTT_PORT = 1883  # Default MQTT port (change if needed, e.g., 8883 for TLS)
 
 ```
 MicroPython-ESP32-Projects/
-├── BreakSense/
-│   └── BreakSense.py     
 ├── LightCont/
 │   └── LightCont.py      
 ├── LivingRoomIOT/
@@ -355,6 +318,8 @@ MicroPython-ESP32-Projects/
 ```
 *(Note: Some directories might contain `.gitkeep` files which are placeholders for Git)*
 
+*Note on AHT drivers: The `aht.py` driver in the `LivingRoomIOT` directory is different from the `aht.py` driver in the `TempSense` directory.*
+
 ## 🔒 Security Notes
 
 - The `secrets.py` file contains sensitive credentials. **Do not share it or commit it to version control.**
@@ -364,7 +329,9 @@ MicroPython-ESP32-Projects/
 
 ## Credits
 
-This project utilizes the aht.py driver, for which we thank Jonathan Fromentin. You can explore his other work at https://github.com/etno712.
+This project utilizes AHT2x sensor drivers from different sources:
+- The driver in `LivingRoomIOT/aht.py` is from Jonathan Fromentin. You can explore his other work at https://github.com/etno712.
+- The driver in `TempSense/aht.py` is based on work by Andreas Bühl and Kattni Rembor.
 
 ## 📜 License
 
